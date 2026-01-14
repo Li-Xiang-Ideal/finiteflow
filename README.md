@@ -26,6 +26,17 @@ interface.  The latter is currently the most usable, complete and
 documented way of using this library.
 
 
+Windows Support
+---------------
+
+This fork introduces support for Windows builds, specifically targeted
+and tested on the [MSYS2](https://www.msys2.org/) MinGW64 environment.
+
+Key improvements include:
+- **LLP64 Compatibility:** Fixed integer truncation issues on Windows
+  (where `long` is 32-bit) using FLINT's `flint_mpz` wrappers.
+
+
 Installation
 ------------
 

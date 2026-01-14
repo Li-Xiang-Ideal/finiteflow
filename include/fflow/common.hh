@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <gmp.h>
 #include <flint/flint.h>
+#include <flint/gmpcompat.h>
 #if defined(__FLINT_VERSION) && (__FLINT_VERSION >= 3)
 # include <flint/nmod.h>
 #endif

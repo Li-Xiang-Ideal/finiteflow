@@ -138,7 +138,7 @@ namespace fflow {
 
       if (std::isdigit(*cur)) {
         const char * start = cur;
-        UInt val = std::strtol(cur, const_cast<char**>(&cur), 10);
+        UInt val = std::strtoll(cur, const_cast<char**>(&cur), 10);
         auto ret =JSONToken{JSONToken::INTEGER,
                             unsigned(cur-start), start, val};
         return ret;
