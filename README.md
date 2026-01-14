@@ -36,6 +36,10 @@ Key improvements include:
   (where `long` is 32-bit) using an internal GMP 64-bit compatibility
   layer for integers and rationals, with or without FLINT. See
   [this issue](https://github.com/peraro/finiteflow/issues/8) for more details.
+- **DLL Conflict Resolution:** Implemented an automated mechanism to
+  rename (cloak) the GMP DLL during the build.  This prevents crashes
+  caused by DLL diamond dependency conflict of GMP when using this
+  library in Mathematica.
 
 
 Installation
@@ -101,6 +105,12 @@ make install
 ```
 where you can omit any of the options in order to pick a default value
 for them.
+
+For MSYS2 MINGW64 users with GMP DLL installed in `/mingw64/bin`,
+consider adding the option `-DCLOAK_GMP_DLL=ON` to the `cmake` command
+to enable the automated DLL conflict resolution if needed; see the
+[Dynamic Library Dependency Conflict](FAQ.md#dynamic-library-dependency-conflict) section of [FAQ.md](FAQ.md) for more information.
+Note that this option has no effect on MSVC.
 
 To run the C/C++ regression tests after configuring a build directory,
 run `cmake --build <build-dir> --target tests` and
