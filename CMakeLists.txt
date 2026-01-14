@@ -173,6 +173,11 @@ set(FFLOW_HEADERS
     )
 
 add_library(fflow ${FFLOW_SOURCES})
+
+if(TARGET gmp_cloaking_job)
+    add_dependencies(fflow gmp_cloaking_job)
+endif()
+
 target_link_libraries(fflow ${LIBS})
 
 install(FILES ${FFLOW_HEADERS} DESTINATION include/fflow)

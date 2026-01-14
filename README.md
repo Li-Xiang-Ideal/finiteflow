@@ -35,6 +35,10 @@ and tested on the [MSYS2](https://www.msys2.org/) MinGW64 environment.
 Key improvements include:
 - **LLP64 Compatibility:** Fixed integer truncation issues on Windows
   (where `long` is 32-bit) using FLINT's `flint_mpz` wrappers.
+- **DLL Conflict Resolution:** Implemented an automated mechanism to
+  rename (cloak) the GMP DLL during the build.  This prevents crashes
+  caused by DLL diamond dependency conflict of GMP when using this
+  library in Mathematica.
 
 
 Installation
@@ -64,7 +68,7 @@ FiniteFlow uses a few functions and macros from the FLINT library.
 For the installation of FLINT you have two options:
 
 - Install the full FLINT library.  Installation packages are available
-  for some Linux distrubutions (including Debian/Ubuntu) and macOS.
+  for some Linux distributions (including Debian/Ubuntu) and macOS.
   See [http://www.flintlib.org/](http://www.flintlib.org/) for more
   information about FLINT and its installation.
 
@@ -97,6 +101,12 @@ make install
 ```
 where you can omit any of the options in order to pick a default value
 for them.
+
+For MSYS2 MINGW64 users with GMP DLL installed in `/mingw64/bin`,
+consider adding the option `-DCLOAK_GMP_DLL=ON` to the `cmake` command
+to enable the automated DLL conflict resolution if needed; see the
+[Dynamic Library Dependency Conflict](FAQ.md#dynamic-library-dependency-conflict) section of [FAQ.md](FAQ.md) for more information.
+Note that this option has no effect on MSVC.
 
 In order to use FiniteFlow from the Mathematica interface, consider
 adding the following to your Mathematica `init.m` file
