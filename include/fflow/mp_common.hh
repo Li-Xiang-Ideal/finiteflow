@@ -29,7 +29,7 @@ namespace fflow {
 
     explicit MPInt(UInt n)
     {
-      mpz_init_set_ui(z_, n);
+      flint_mpz_init_set_ui(z_, n);
     }
 
     explicit MPInt(const char * str, unsigned base = 10)
@@ -56,7 +56,7 @@ namespace fflow {
 
     MPInt & operator= (UInt n)
     {
-      mpz_set_ui(z_, n);
+      flint_mpz_set_ui(z_, n);
       return *this;
     }
 
@@ -73,12 +73,12 @@ namespace fflow {
 
     Int to_int() const
     {
-      return mpz_get_si(z_);
+      return flint_mpz_get_si(z_);
     }
 
     UInt to_uint() const
     {
-      return mpz_get_ui(z_);
+      return flint_mpz_get_ui(z_);
     }
 
     mpz_t & get()
@@ -98,7 +98,7 @@ namespace fflow {
 
     int cmp(UInt oth) const
     {
-      return mpz_cmp_ui(z_, oth);
+      return flint_mpz_cmp_ui(z_, oth);
     }
 
     int sign() const
@@ -265,8 +265,8 @@ namespace fflow {
 
     void to_int(Int & num, Int & den) const
     {
-      num = mpz_get_si(mpq_numref(q_));
-      den = mpz_get_si(mpq_denref(q_));
+      num = flint_mpz_get_si(mpq_numref(q_));
+      den = flint_mpz_get_si(mpq_denref(q_));
     }
 
     bool operator== (const MPRational & oth) const
