@@ -7,26 +7,19 @@
 #include <vector>
 #include <cstdlib>
 #include <gmp.h>
-#include <flint/flint.h>
-#include <flint/gmpcompat.h>
-#if defined(__FLINT_VERSION) && (__FLINT_VERSION >= 3)
-# include <flint/nmod.h>
-#endif
-#include <flint/nmod_vec.h>
+#include <fflow/ffmod.h>
 #include <fflow/config.hh>
 #include <fflow/format.h>
 #include <fflow/ostream.h>
-#ifndef FFLOW_NO_DBG
-# include <fflow/debug.hh>
-#endif
+#include <fflow/debug.hh>
 
-#ifdef FFLOW_USE_EXCEPTIONS
-# define FFLOW_THROW(exc) throw exc
+// Use if(FF_ERRCOND(error_condition)) { ... }
+// to handle errors to hint that they are exceptional cases.
+#if defined(__GNUC__) || defined(__clang__)
+  #define FF_ERRCOND(cond) __builtin_expect(cond,0)
 #else
-# define FFLOW_THROW(exc) std::terminate()
+  #define FF_ERRCOND(cond) (cond)
 #endif
-
-#define FFLOW_LOOP_UNROLL 1
 
 namespace fflow {
 
@@ -36,47 +29,12 @@ namespace fflow {
   static_assert(sizeof(mp_limb_t) == sizeof(UInt),
                 "Flint integer type is not a 64-bit integer");
 
-  // Shoup’s modular multiplication algorithm:
-  // http://web.maths.unsw.edu.au/~davidharvey/talks/fastntt-2-talk.pdf
-  //
-  // Given w in Z_p, with p<2^63, if we need to compute
-  //
-  //   t * w mod p
-  //
-  // for several values of t in Z_p, we can precompute
-  //
-  //   wp = quotient(2^64 * w, p)
-  //
-  // with precomp_mul_shoup, and then use the fast multiplication
-  // algoritm mul_mod_shoup
-  inline UInt precomp_mul_shoup_impl(UInt w, UInt p)
-  {
-    UInt q, r;
-    udiv_qrnnd(q, r, w, 0, p);
-    return q;
-  }
-  inline UInt mul_mod_shoup_impl(UInt t, UInt w, UInt wp, UInt p)
-  {
-    UInt q, r;
-
-    // q = high bits of wp*t (r is ignored)
-    umul_ppmm(q, r, wp, t);
-
-    // note: the products below may overflow, but it's okay since we are
-    // supposed to compute this modulo 2^64
-    r = w*t - q*p;
-
-    if (r >= p)
-      r -= p;
-
-    return r;
-  }
-
   // returns 2^64 mod p, assuming 2 p < 2^64 < 3 p
   inline UInt beta_mod(UInt p)
   {
     return -(p<<1);
   }
+
 
   // This must be initialized with a prime "p" satisfying
   //
@@ -86,11 +44,11 @@ namespace fflow {
   // library.
   class Mod {
   public:
-    Mod() : mod_{0,0,0} {}
+    Mod() : mod_{0,0} {}
 
     explicit Mod(UInt mod)
     {
-      nmod_init(&mod_, mod);
+      mod_ = ffPrecomputedReciprocalMod(mod);
     }
 
     UInt n() const
@@ -98,18 +56,8 @@ namespace fflow {
       return mod_.n;
     }
 
-    const nmod_t & nmod() const
-    {
-      return mod_;
-    }
-
-    void norm_to_one_()
-    {
-      mod_.norm = 1;
-    }
-
-  private:
-    nmod_t mod_;
+    //private:
+    FFMod mod_;
   };
 
   // this is used when the return value is just a flag
@@ -142,69 +90,51 @@ namespace fflow {
     return n < 0 ? -1 : 1;
   }
 
+
   // assumes a < 2 p
   inline UInt red_mod_(UInt a, Mod mod)
   {
     return a < mod.n() ? a : a - mod.n();
   }
+
   // faster a % mod
   inline UInt red_mod(UInt a, Mod mod)
   {
     UInt two_p = mod.n() << 1;
     return a >= two_p ? (a - two_p) : red_mod_(a, mod);
   }
+
   inline UInt add_mod(UInt a, UInt b, Mod mod)
   {
-    UInt ret = a+b-mod.n();
-    return Int(ret) < 0 ? ret + mod.n() : ret;
+    return ffAddMod(a, b, mod.mod_);
   }
   inline UInt sub_mod(UInt a, UInt b, Mod mod)
   {
-    return _nmod_sub(a, b, nmod_t{mod.n(),0,0});
+    return ffSubMod(a, b, mod.mod_);
   }
   inline UInt neg_mod(UInt a, Mod mod)
   {
-    return _nmod_sub(0, a, nmod_t{mod.n(),0,0});
+    return ffSubMod(0, a, mod.mod_);
   }
-  // (ah*2^64 + al) % mod, assuming ah < mod
-  inline UInt red_mod2(UInt ah, UInt al, Mod mod)
-  {
-    mod.norm_to_one_();
-    const nmod_t & nmod = mod.nmod();
-    NMOD_RED2(ah, ah, al, nmod);
-    return ah;
-  }
-  // (ah*2^128 + am*2^64 + al) % mod, assuming ah < mod
-  inline UInt red_mod3(UInt ah, UInt am, UInt al, Mod mod)
-  {
-    ah = red_mod2(ah, am, mod);
-    return red_mod2(ah, al, mod);
-  }
-  // (ah*2^64 + al) % mod, no assumption on ah, al
-  inline UInt red2_mod2(UInt ah, UInt al, Mod mod)
-  {
-    return red_mod2(red_mod(ah, mod), al, mod);
-  }
+
   inline UInt mul_mod(UInt a, UInt b, Mod mod)
   {
-    UInt resh, resl;
-    umul_ppmm(resh, resl, a, b);
-    return red_mod2(resh, resl, mod);
+    return ffMulMod(a, b, mod.mod_);
+    //UInt bp = ffPrecomputedMulShoup(b, mod.mod_);
+    //return ffMulShoup(a, b, bp, mod.mod_);
   }
   // a + b*c
   inline UInt apbc_mod(UInt a, UInt b, UInt c, Mod mod)
   {
-    UInt prodh, prodl;
-    umul_ppmm(prodh, prodl, b, c);
-    add_ssaaaa(prodh, prodl, prodh, prodl, UInt(0), a);
-    return red_mod2(prodh, prodl, mod);
+    return ffAPBCMod(a, b, c, mod.mod_);
   }
   // a - b*c
   inline UInt ambc_mod(UInt a, UInt b, UInt c, Mod mod)
   {
     b = neg_mod(b, mod);
-    return apbc_mod(a, b, c, mod);
+    return ffAPBCMod(a, b, c, mod.mod_);
   }
+
   // a = a + b*c
   inline void addmul_mod(UInt & a, UInt b, UInt c, Mod mod)
   {
@@ -214,28 +144,6 @@ namespace fflow {
   inline void submul_mod(UInt & a, UInt b, UInt c, Mod mod)
   {
     a = ambc_mod(a, b, c, mod);
-  }
-  // a*b - c*d
-  inline UInt abmcd_mod_(UInt a, UInt b, UInt c, UInt d, Mod mod)
-  {
-    return sub_mod(mul_mod(a,b,mod), mul_mod(c,d,mod), mod);
-  }
-  inline UInt abmcd_mod(UInt a, UInt b, UInt c, UInt d, Mod mod)
-  {
-    UInt prodh, prodl, sumh=0, suml=0;
-    UInt negc = neg_mod(c, mod);
-    umul_ppmm(sumh, suml, a, b);
-    umul_ppmm(prodh, prodl, negc, d);
-    add_ssaaaa(sumh, suml, sumh, suml, prodh, prodl);
-    return red_mod2(sumh, suml, mod);
-  }
-  inline UInt add3_mod(UInt a, UInt b, UInt c, Mod mod)
-  {
-    return add_mod(add_mod(a,b,mod),c,mod);
-  }
-  inline UInt mul3_mod(UInt a, UInt b, UInt c, Mod mod)
-  {
-    return mul_mod(mul_mod(a,b,mod),c,mod);
   }
 
   // fast calculation of 1/2 and -1/2 (note: mod is an odd prime)
@@ -257,12 +165,13 @@ namespace fflow {
 
   inline UInt precomp_mul_shoup(UInt w, Mod mod)
   {
-    return precomp_mul_shoup_impl(w, mod.n());
+    return ffPrecomputedMulShoup(w, mod.mod_);
   }
   inline UInt mul_mod_shoup(UInt t, UInt w, UInt wp, Mod mod)
   {
-    return mul_mod_shoup_impl(t, w, wp, mod.n());
+    return ffMulShoup(t, w, wp, mod.mod_);
   }
+
   inline void precomp_array_mul_shoup(const UInt w[], std::size_t n, Mod mod,
                                       UInt wp[])
   {

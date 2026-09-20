@@ -20,6 +20,8 @@ namespace fflow {
       IS_NEEDED = 1 << 2,
       IS_NON_ZERO = 1 << 3,
       IS_SWEEPED = 1 << 4,
+      IS_NEEDED_RHS = 1 << 5, // only for sparse systems
+      IS_NEEDED_ANY = IS_NEEDED | IS_NEEDED_RHS, // only for sparse systems
       INIT = 0
     };
 
@@ -310,13 +312,42 @@ namespace fflow {
   std::ostream & operator << (std::ostream & os,
                               const MatrixView & m);
 
+  // A 64-bit integer aligned to 32 bits
+  struct SMUInt {
+#if FFLOW_BIG_ENDIAN
+    unsigned high, low;
+#else
+    unsigned low, high;
+#endif
+    UInt get() const;
+    void set(UInt z);
+  };
+
+  namespace detail {
+    union SMUIntHL64 {
+      SMUInt smval;
+      UInt val;
+    };
+  }
+
+  inline UInt SMUInt::get() const
+  {
+    return detail::SMUIntHL64{*this}.val;
+  }
+  inline void SMUInt::set(UInt z)
+  {
+    detail::SMUIntHL64 z64;
+    z64.val = z;
+    *this = z64.smval;
+  }
+
   union SparseMatCell {
     struct {
-      UInt col, val;
+      unsigned col;
+      SMUInt val;
     };
     struct {
-      unsigned size, cap;
-      UInt id;
+      unsigned size, cap, id;
     };
   };
 
@@ -326,7 +357,7 @@ namespace fflow {
     enum {
       DEF_SIZE = 8,
       EL_SIZE = sizeof(SparseMatCell),
-      END = fflow::FAILED
+      END = ~(unsigned)(0)
     };
 
     SparseMatrixRow()
@@ -338,10 +369,12 @@ namespace fflow {
       data_[1].col = END;
     }
 
+#if 0
     SparseMatrixRow(SparseMatrixRow && oth) : data_(oth.data_)
     {
       oth.data_ = nullptr;
     }
+#endif
 
     void swap(SparseMatrixRow & oth)
     {
@@ -360,17 +393,17 @@ namespace fflow {
       std::copy(data_+1, data_+size()+2, oth.data_+1);
     }
 
-    UInt capacity() const
+    unsigned capacity() const
     {
       return data_[0].cap;
     }
 
-    UInt id() const
+    unsigned id() const
     {
       return data_[0].id;
     }
 
-    UInt & id()
+    unsigned & id()
     {
       return data_[0].id;
     }
@@ -385,7 +418,7 @@ namespace fflow {
       return data_[0].size;
     }
 
-    UInt first_nonzero_column() const
+    unsigned first_nonzero_column() const
     {
       return el(0).col;
     }
@@ -447,7 +480,7 @@ namespace fflow {
       for (unsigned i=0; i<ncols; ++i)
         if (r[i]) {
           el(idx).col = i;
-          el(idx).val = r[i];
+          el(idx).val.set(r[i]);
           ++idx;
         }
       el(idx).col = END;
@@ -460,14 +493,14 @@ namespace fflow {
       if (incl_id)
         r[ncols] = data_[0].id;
       for (unsigned idx=0; el(idx).col != END; ++idx)
-        r[el(idx).col] = el(idx).val;
+        r[el(idx).col] = el(idx).val.get();
     }
 
     // z must be nonzero
     void mul(UInt z, Mod mod)
     {
       for (unsigned idx=0; el(idx).col != END; ++idx)
-        el(idx).val = mul_mod(el(idx).val, z, mod);
+        el(idx).val.set(mul_mod(el(idx).val.get(), z, mod));
     }
 
     unsigned eq_to_substitute(const unsigned * eqs) const
@@ -531,29 +564,35 @@ namespace fflow {
     }
 
     // r1 = r1-r1(pivot)*r2
-    void gauss_elimination(SparseMatrixRow & r1,
+    void gauss_elimination(const SparseMatrixRow & r1,
                            const SparseMatrixRow & r2,
                            std::size_t pivot,
                            Mod mod);
+
+    template<bool Shoup>
+    void gauss_elimination_impl(const SparseMatrixRow & r1,
+                                const SparseMatrixRow & r2,
+                                std::size_t pivot,
+                                Mod mod);
 
     UInt get(UInt col) const
     {
       unsigned idx=0;
       while (el(idx).col < col)
         ++idx;
-      return el(idx).col == col ? el(idx).val : 0;
+      return el(idx).col == col ? el(idx).val.get() : 0;
     }
 
     // same as get but assumes col is either the first non-vanishing
     // column or not present at all
     UInt get_first(UInt col) const
     {
-      return el(0).col == col ? el(0).val : 0;
+      return el(0).col == col ? el(0).val.get() : 0;
     }
 
     UInt get_first() const
     {
-      return el(0).col != END ? el(0).val : 0;
+      return el(0).col != END ? el(0).val.get() : 0;
     }
 
     bool is_zero() const
@@ -579,6 +618,8 @@ namespace fflow {
 
     typedef LSVar::flag_t flag_t;
 
+    static const unsigned N_WORKING_ROWS = 2;
+
     typedef SmallVector<unsigned,16> EqDeps;
 
     SparseMatrix() : rows_(nullptr), n_(0), m_(0) {}
@@ -586,7 +627,7 @@ namespace fflow {
     void resize(std::size_t n, std::size_t m)
     {
       if (n_ != n)
-        rows_.reset(new SparseMatrixRow[n+1]);
+        rows_.reset(new SparseMatrixRow[n+N_WORKING_ROWS]);
       n_ = n;
       m_ = m;
       var_eq_.reset(new unsigned[m]);
@@ -595,7 +636,9 @@ namespace fflow {
     void restrict_rows(std::size_t n)
     {
       if (n<n_) {
-        for (unsigned i=n+1; i<n_; ++i)
+        for (unsigned i=0; i<N_WORKING_ROWS; ++i)
+          rows_[n+i] = std::move(rows_[n_+i]);
+        for (unsigned i=n+N_WORKING_ROWS; i<n_+N_WORKING_ROWS; ++i)
           rows_[i].free();
         n_ = n;
       }
@@ -615,28 +658,18 @@ namespace fflow {
         rows_[i].toDenseMatrixRow(mv.row(i), m_, incl_id);
     }
 
-    void sortRows();
+    void sortRows(const int * eq_weight = 0);
 
-    void toRowEcholon(Mod mod, EqDeps * eqdeps = nullptr);
-    void toReducedRowEcholon(Mod mod,
+    void toRowEcholon(Mod mod, unsigned maxrow, bool keep_all_outs,
+                      EqDeps * eqdeps = nullptr);
+    void toReducedRowEcholon(Mod mod, unsigned maxrow,
+                             bool reduced, bool keep_all_outs,
                              flag_t * flags = nullptr,
                              EqDeps * eqdeps = nullptr);
-    void toReducedRowEcholon(Mod mod, EqDeps * eqdeps)
-    {
-      toReducedRowEcholon(mod, nullptr, eqdeps);
-    }
 
-    void toRowEcholonWithMaxRow(Mod mod, unsigned maxrow,
-                                EqDeps * eqdeps = nullptr);
-    void toReducedRowEcholonWithMaxRow(Mod mod,
-                                       unsigned maxrow, bool reduced,
-                                       flag_t * flags = nullptr,
-                                       EqDeps * eqdeps = nullptr);
-    void toReducedRowEcholonWithMaxRow(Mod mod, unsigned maxrow, bool reduced,
-                                       EqDeps * eqdeps)
-    {
-      toReducedRowEcholonWithMaxRow(mod, maxrow, reduced, nullptr, eqdeps);
-    }
+    // Remove equations of the form 0==0 and x[i]==0, returning the
+    // new number of rows.
+    unsigned removeZeroDeps(bool remove_zerovars);
 
     UInt el(unsigned i, unsigned j) const
     {
@@ -663,9 +696,14 @@ namespace fflow {
       return rows_[i];
     }
 
-    SparseMatrixRow & working_row()
+    SparseMatrixRow & working_row(unsigned i)
     {
-      return rows_[n_];
+      return rows_[n_+i];
+    }
+
+    void swap_working_rows()
+    {
+      rows_[n_].swap(rows_[n_+1]);
     }
 
     unsigned nrows() const
@@ -679,9 +717,6 @@ namespace fflow {
     }
 
     void debug_print(std::ostream & os);
-
-    // returns dependent variables
-    void dependent_vars(std::vector<std::size_t> & vars) const;
 
     bool isImpossibleSystem() const;
 

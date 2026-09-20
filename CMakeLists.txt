@@ -1,6 +1,9 @@
-cmake_minimum_required(VERSION 3.4)
+cmake_minimum_required(VERSION 3.12)
 
 project(finiteflow CXX C)
+
+set(FFLOW_VERSION 2)
+set(FFLOW_VERSION_MINOR 0)
 
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
@@ -16,10 +19,10 @@ set(CMAKE_C_STANDARD 99)
 
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
-set(AMFF_ENABLE_EXCEPTIONS OFF CACHE BOOL
+set(FFLOW_ENABLE_EXCEPTIONS OFF CACHE BOOL
     "Do not add compiler flags disabling exceptions")
 
-if(NOT(AMFF_ENABLE_EXCEPTIONS))
+if(NOT(FFLOW_ENABLE_EXCEPTIONS))
     if(MSVC)
         add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/EHs-c->)
     else()
@@ -27,9 +30,14 @@ if(NOT(AMFF_ENABLE_EXCEPTIONS))
     endif()
 endif()
 
-set(FFLOW_THREAD_POOL OFF CACHE BOOL
-    "Use thread pools for parallel tasks")
-
+# Thread pool, enabled by default except on MacOS
+if(APPLE)
+    set(FFLOW_THREAD_POOL OFF CACHE BOOL
+        "Use thread pools for parallel tasks")
+else()
+    set(FFLOW_THREAD_POOL ON CACHE BOOL
+        "Use thread pools for parallel tasks")
+endif()
 
 # rpaths (see https://cmake.org/Wiki/CMake_RPATH_handling#Always_full_RPATH)
 
@@ -49,10 +57,22 @@ endif("${isSystemDir}" STREQUAL "-1")
 
 # external dependencies
 
-find_package(FLINT REQUIRED)
-include_directories(SYSTEM ${FLINT_INCLUDE_DIRS})
-include_directories(SYSTEM ${FLINT_INCLUDE_DIRS}/flint)
-set(LIBS ${LIBS} ${FLINT_TARGETS})
+set(FFLOW_USE_FLINT ON CACHE BOOL
+    "Use FLINT to compute multiplicative inverses")
+if (FFLOW_USE_FLINT)
+    find_package(FLINT)
+    if (FLINT_LIBRARY)
+        include_directories(SYSTEM ${FLINT_INCLUDE_DIRS})
+        include_directories(SYSTEM ${FLINT_INCLUDE_DIRS}/flint)
+        set(LIBS ${LIBS} ${FLINT_TARGETS})
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DFFLOW_USE_FLINT=1")
+    else()
+        message("-- FLINT not found")
+    endif()
+endif()
+if (NOT FLINT_LIBRARY)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DFFLOW_USE_FLINT=0")
+endif()
 
 find_package(GMP REQUIRED)
 include_directories(SYSTEM ${GMP_INCLUDE_DIRS})
@@ -72,6 +92,7 @@ include_directories(
     BEFORE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${PROJECT_BINARY_DIR}/include
     )
 
 set(FFLOW_SOURCES
@@ -91,6 +112,7 @@ set(FFLOW_SOURCES
     src/alg_reconstruction.cc
     src/alg_mp_reconstruction.cc
     src/ratfun_parser.cc
+    src/ratexpr_parser.cc
 
     src/mp_functions.cc
     src/mp_gcd.cc
@@ -116,11 +138,21 @@ set(FFLOW_SOURCES
     src/alg_laurent.cc
     src/subgraph_reconstruct.cc
     src/cached_subgraph.cc
+    src/eval_count.cc
+    src/ffmod.c
+
     src/capi.cc
+    src/capi_native_ext.cc
+    src/capi_custom_threads.cc
+
+    src/ffuhash.h
+    src/ffuhash.c
+    src/WjCryptLib_Sha1.h
+    src/WjCryptLib_Sha1.c
     )
 
 set(FFLOW_HEADERS
-    include/fflow/config.hh
+    ${PROJECT_BINARY_DIR}/include/fflow/config.hh
 
     include/fflow/common.hh
     include/fflow/small_vector.hh
@@ -138,8 +170,10 @@ set(FFLOW_HEADERS
     include/fflow/rational_function.hh
     include/fflow/univariate_reconstruction.hh
     include/fflow/ratfun_parser.hh
+    include/fflow/ratexpr_parser.hh
 
     include/fflow/mp_common.hh
+    include/fflow/gmp_compat.hh
     include/fflow/mp_functions.hh
     include/fflow/mp_gcd.hh
 	include/fflow/mp_multivariate_reconstruction.hh
@@ -169,7 +203,12 @@ set(FFLOW_HEADERS
     include/fflow/alg_laurent.hh
     include/fflow/subgraph_reconstruct.hh
     include/fflow/cached_subgraph.hh
+    include/fflow/eval_count.hh
+    include/fflow/global.hh
+    include/fflow/ffmod.h
     include/fflow/capi.h
+    include/fflow/capi_native_ext.h
+    include/fflow/capi_custom_threads.h
     )
 
 add_library(fflow ${FFLOW_SOURCES})
@@ -178,11 +217,19 @@ target_link_libraries(fflow ${LIBS})
 install(FILES ${FFLOW_HEADERS} DESTINATION include/fflow)
 install(TARGETS fflow ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
 
+install(
+    DIRECTORY ${PROJECT_SOURCE_DIR}/cmake/
+    DESTINATION ${CMAKE_INSTALL_PREFIX}/share/FFlowCMake/cmake
+)
+
 
 # tests
 
 set(TEST_TARGETS
+    testmp64
+    testllp64
     testjson
+    testbench
     )
 
 set(TEST_CTARGETS
@@ -206,6 +253,15 @@ if(NOT TARGET tests)
   add_dependencies(tests ${TEST_TARGETS} ${TEST_CTARGETS})
 endif()
 
+enable_testing()
+add_test(NAME mp64 COMMAND testmp64)
+add_test(NAME llp64 COMMAND testllp64)
+add_test(NAME capi COMMAND testcapi)
+add_test(NAME json_reconstruction COMMAND testjson
+    "${PROJECT_SOURCE_DIR}/tests_json/test_ratfuns.json"
+    "${PROJECT_BINARY_DIR}/test_ratfuns_result.json")
+set_tests_properties(capi PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+
 
 # mathematica
 
@@ -219,7 +275,12 @@ set(FFLOW_MATHEMATICA_SOURCES
     mathlink/fflowmlink.cc
     )
 
-find_package(Mathematica COMPONENTS MathLink WolframLibrary)
+set(FFLOW_MATHEMATICA ON CACHE BOOL
+    "Build Mathematica interface")
+
+if (FFLOW_MATHEMATICA)
+    find_package(Mathematica COMPONENTS MathLink WolframLibrary)
+endif()
 
 if (Mathematica_FOUND)
 
@@ -249,13 +310,60 @@ during configuration."
             )
     endif()
 
-else()
+elseif(FFLOW_MATHEMATICA)
 
     message(WARNING "\
 The Mathematica interface cannot be installed \
 because no suitable Mathematica installation was found."
         )
 
+endif()
+
+
+set(FFLOW_PYTHON OFF CACHE BOOL "Build Python interface")
+set(FFLOW_PYTHON_INSTALL "" CACHE PATH
+    "Installation path for Python interface")
+if (FFLOW_PYTHON)
+    find_package (Python3 COMPONENTS Interpreter Development)
+    if (Python3_FOUND)
+        file(MAKE_DIRECTORY ${PROJECT_BINARY_DIR}/_python_gen)
+        add_custom_command(
+            DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/include/fflow/capi.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/pythonapi/fflow_build.py"
+            COMMAND
+            ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/pythonapi/fflow_build.py"
+            "--source-only"
+            OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/_python_gen/_cffi_fflow.c"
+            WORKING_DIRECTORY "${PROJECT_BINARY_DIR}/_python_gen"
+        )
+        add_custom_target(
+            fflow_python_interface_src ALL
+            DEPENDS
+            "${PROJECT_BINARY_DIR}/_python_gen/_cffi_fflow.c"
+        )
+        Python3_add_library(_cffi_fflow
+            MODULE
+            "${PROJECT_BINARY_DIR}/_python_gen/_cffi_fflow.c"
+        )
+        add_dependencies(_cffi_fflow fflow_python_interface_src)
+        target_link_libraries(_cffi_fflow PRIVATE fflow ${LIBS})
+        if (FFLOW_PYTHON_INSTALL)
+            install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pythonapi/fflow.py"
+                DESTINATION ${FFLOW_PYTHON_INSTALL})
+            install(TARGETS _cffi_fflow
+                DESTINATION ${FFLOW_PYTHON_INSTALL})
+        else()
+            execute_process(COMMAND ${Python3_EXECUTABLE} -m site --user-site
+                OUTPUT_VARIABLE FFLOW_PYTHON_USER_SITE
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+            install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pythonapi/fflow.py"
+                DESTINATION ${FFLOW_PYTHON_USER_SITE})
+            install(TARGETS _cffi_fflow
+                DESTINATION ${FFLOW_PYTHON_USER_SITE})
+        endif()
+    endif()
 endif()
 
 

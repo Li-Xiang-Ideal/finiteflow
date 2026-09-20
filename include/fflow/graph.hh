@@ -4,6 +4,7 @@
 #include <fflow/algorithm.hh>
 #include <fflow/alg_mp_reconstruction.hh>
 #include <fflow/refcounted_ptr.hh>
+#include <fflow/global.hh>
 #include <future>
 #if FFLOW_THREAD_POOL
 # include <fflow/thread_pool.hh>
@@ -160,6 +161,8 @@ namespace fflow {
                       std::unique_ptr<AlgorithmData> && algdata,
                       const unsigned * inputs);
 
+    unsigned peek_new_node_id() const;
+
     // This will fail unless the node is mutable
     unsigned delete_node(unsigned id);
 
@@ -227,6 +230,11 @@ namespace fflow {
       AlgDegs degs;
       std::unique_ptr<bool[]> completed_;
       std::unique_ptr<MPReconstructedRatFun[]> recratfun_;
+
+      bool degs_avail() const
+      {
+        return degs.numdeg.get();
+      }
     };
 
     AlgRecData & rec_data();
@@ -240,6 +248,7 @@ namespace fflow {
     friend class Node;
     friend class Session;
     friend class SubGraph;
+    friend struct GraphExtParallelEvaluator;
 
   private:
     std::vector<std::unique_ptr<Node>> nodes_;
@@ -294,7 +303,7 @@ namespace fflow {
     Graph * graph(unsigned id);
     const Graph * graph(unsigned id) const;
     bool graph_exists(unsigned id) const;
-    bool graph_can_be_evaluated(unsigned id) const;
+    bool graph_can_be_evaluated(unsigned id, bool check_learned = true) const;
 
     Node * node(unsigned graphid, unsigned nodeid);
     const Node * node(unsigned graphid, unsigned nodeid) const;
@@ -317,6 +326,7 @@ namespace fflow {
     unsigned delete_node(unsigned graphid, unsigned nodeid);
 
     unsigned set_output_node(unsigned graphid, unsigned nodeid);
+    unsigned get_output_node(unsigned graphid) const;
 
     // Nodes and graphs which are not currently being used by other
     // algorithms, e.g. as inputs, can be made mutable again, even if
@@ -334,11 +344,11 @@ namespace fflow {
     Ret parallel_all_degrees(unsigned graphid, unsigned nthreads,
                              const ReconstructionOptions & opt);
 
-    void sample(unsigned graphid, const ReconstructionOptions & opt,
-                SamplePointsGenerator * samplegen = nullptr);
-    void parallel_sample(unsigned graphid, unsigned nthreads,
-                         const ReconstructionOptions & opt,
-                         SamplePointsGenerator * samplegen = nullptr);
+    Ret sample(unsigned graphid, const ReconstructionOptions & opt,
+               SamplePointsGenerator * samplegen = nullptr);
+    Ret parallel_sample(unsigned graphid, unsigned nthreads,
+                        const ReconstructionOptions & opt,
+                        SamplePointsGenerator * samplegen = nullptr);
 
     Ret reconstruct(unsigned graphid, MPReconstructedRatFun res[],
                     const ReconstructionOptions & opt);
@@ -393,6 +403,7 @@ namespace fflow {
     unsigned new_dummy_graph(unsigned nparsin, unsigned nparsout);
     Ret dump_degrees(unsigned graphid, const char * file) const;
     Ret load_degrees(unsigned graphid, const char * file);
+    Ret set_degrees(unsigned graphid, const unsigned * data);
 
     // Returns the total number of evaluation points needed for the
     // reconstruction, using a number of primes, etc... specified in
@@ -427,9 +438,18 @@ namespace fflow {
 
     void make_reconstructible(unsigned graphid);
 
+    void active_graph_ids(std::vector<unsigned> & graph_ids);
+
     ~Session();
 
     static unsigned default_nthreads();
+
+    // utilities
+
+    // rat_rec the array z modulo mod, parallelizing the calculation
+    void parallel_rat_rec(const MPInt z[], unsigned n,
+                          const MPInt & mod, MPRational q[],
+                          unsigned n_threads=0);
 
   private:
 
@@ -455,7 +475,7 @@ namespace fflow {
     void gen_sample_points_(unsigned graphid, SamplePointsVector & samples,
                             const ReconstructionOptions & opt);
 
-    void set_up_to_rec_(unsigned id, std::vector<unsigned> & to_rec);
+    Ret set_up_to_rec_(unsigned id, std::vector<unsigned> & to_rec);
     void move_rec_(unsigned id, MPReconstructedRatFun res[]);
 
     Ret reconstruct_(unsigned graphid,
@@ -479,6 +499,10 @@ namespace fflow {
     Ret var_degrees_(unsigned graphid, unsigned var,
                      const ReconstructionOptions & opt);
 
+    Ret load_or_set_degrees_(unsigned graphid,
+                             const char * file,
+                             const unsigned * data);
+
     void init_subcontexts_(unsigned n);
 
     void alloc_threads_(unsigned n);
@@ -496,6 +520,7 @@ namespace fflow {
     friend struct GraphParallelEvaluate;
     friend struct GraphParallelReconstruct;
     friend struct GraphParallelReconstructMod;
+    friend struct GraphExtParallelEvaluator;
 
   private:
     std::vector<GraphPtr> graphs_;
@@ -506,6 +531,34 @@ namespace fflow {
     ThreadPool pool_;
 #endif
   };
+
+  struct GraphExtParallelEvaluator {
+
+    GraphExtParallelEvaluator() = delete;
+    GraphExtParallelEvaluator(GraphExtParallelEvaluator &) = delete;
+    GraphExtParallelEvaluator(GraphExtParallelEvaluator &&) = delete;
+
+    GraphExtParallelEvaluator(Session & s,
+                              unsigned graphid, unsigned n_threads);
+    ~GraphExtParallelEvaluator();
+
+    Ret evaluate(const UInt xin[], Mod mod, unsigned thread_id,
+                 UInt xout[]);
+
+    bool valid() const
+    {
+      return session;
+    }
+
+  private:
+    Session * session;
+    GraphPtr graph;
+    std::unique_ptr<bool[]> synched;
+    unsigned n_threads;
+
+  };
+
+  extern Global<Session> global_session;
 
 
 } // namespace fflow

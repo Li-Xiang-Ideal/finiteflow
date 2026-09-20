@@ -50,7 +50,7 @@ namespace fflow {
     void reset(AlgorithmData * data);
 
     void init(std::size_t neqs, std::size_t nvars,
-              unsigned * needed_vars, unsigned needed_size,
+              const unsigned * needed_vars, unsigned needed_size,
               DenseLinearSolverData & data)
     {
       data.mat_.reset(neqs, nvars+2);
@@ -119,6 +119,12 @@ namespace fflow {
     }
 
     Ret only_homogeneous(bool flag = true);
+    Ret only_non_homogeneous(bool flag = true);
+
+    bool is_impossible() const
+    {
+      return is_learning_impossible_();
+    }
 
   private:
 
@@ -146,12 +152,13 @@ namespace fflow {
     Ret check_dependent_variables_(AlgorithmData * data,
                                    MatrixView & mv) const;
 
-    bool is_learning_impossible_(AlgorithmData * data) const
+    bool is_learning_impossible_() const
     {
-      return adata_(data).depv_.empty() && indepv_.empty();
+      return impossible_;
     }
 
     void learn_zeroes_(AlgorithmData * data, MatrixView & mv);
+    void learn_zeroes_onlynonhomog_(AlgorithmData * data, MatrixView & mv);
     void learn_needed_(AlgorithmData * data, MatrixView & mv);
 
     void replace_zeroes_(MatrixView & mv) const;
@@ -188,7 +195,7 @@ namespace fflow {
     std::size_t nneeded_ext_;
     std::size_t zero_vars_ = 0, nndeps_ = 0, nnindeps_ = 0, nnindepeqs_ = 0;
     flag_t stage_ = FIRST_;
-    bool homog_ = false;
+    bool homog_ = false, only_non_homog_ = false, impossible_ = false;
   };
 
 
@@ -198,7 +205,6 @@ namespace fflow {
   private:
     friend class SparseLinearSolver;
     SparseMatrix mat_;
-    std::vector<std::size_t> depv_;
   };
 
   class SparseLinearSolver : public Algorithm {
@@ -214,14 +220,16 @@ namespace fflow {
 
     virtual UInt min_learn_times() override
     {
-      return 3;
+      if (stage_ == FIRST_)
+        return 2;
+      return 1;
     }
 
     virtual Ret learn(Context * ctxt,
                       AlgInput xin[], Mod mod, AlgorithmData * data) override;
 
     virtual Ret fill_matrix(Context * ctxt,
-                            std::size_t n_rows, const std::size_t rows[],
+                            unsigned n_rows, const unsigned rows[],
                             AlgInput xi[], Mod mod,
                             AlgorithmData * data,
                             SparseMatrix & m) const = 0;
@@ -237,15 +245,12 @@ namespace fflow {
               const unsigned * needed_vars, unsigned needed_size,
               SparseLinearSolverData & data)
     {
-      data.mat_.resize(neqs, nvars+1);
-      xinfo_.reset(new flag_t[nvars+1]());
-      indepeqs_.reset(new std::size_t[neqs]);
-      nneeded_ext_ = needed_size;
-      needed_ext_.reset(new std::size_t[needed_size]);
-      for (unsigned i=0; i<needed_size; ++i)
-        needed_ext_[i] = needed_vars[i];
       neqs_ = neqs;
       nvars_ = nvars;
+      data.mat_.resize(neqs, nvars+1);
+      xinfo_.reset(new flag_t[nvars+1]());
+      indepeqs_.reset(new unsigned[neqs]);
+      set_ext_needed_(needed_vars, needed_size);
       stage_ = FIRST_;
     }
 
@@ -282,12 +287,12 @@ namespace fflow {
       return nnindeps_;
     }
 
-    const std::size_t * needed_depvars() const
+    const unsigned * needed_depvars() const
     {
       return needed_dep_.get();
     }
 
-    const std::size_t * needed_indepvars() const
+    const unsigned * needed_indepvars() const
     {
       return needed_indep_.get();
     }
@@ -297,18 +302,19 @@ namespace fflow {
       return nnindepeqs_;
     }
 
-    const std::size_t * indep_eqs() const
+    const unsigned * indep_eqs() const
     {
       return indepeqs_.get();
     }
 
-    void mark_and_sweep_eqs(AlgorithmData * data);
+    Ret mark_and_sweep_eqs(AlgorithmData * data);
 
     Ret only_homogeneous(bool flag = true);
+    Ret only_non_homogeneous(bool flag = true);
 
     bool marked_and_sweeped() const
     {
-      return marked_and_sweeped_;
+      return (flag_ & MARKED_AND_SWEEPED_);
     }
 
     bool output_is_sparse() const
@@ -317,12 +323,40 @@ namespace fflow {
     }
 
     Ret sparse_output(bool flag = true);
-    Ret sparse_output_with_maxrow(unsigned maxrow, bool back_subst = true);
+    Ret sparse_output_with_maxcol(unsigned maxcol,
+                                  bool back_subst,
+                                  bool keep_all_outs);
+
+    Ret set_eq_weight(const int * eq_weight);
 
     // the returned pointer may be null
     const std::vector<std::vector<unsigned>> * sparse_output_data() const
     {
       return sparseout_data_.get();
+    }
+
+    bool is_impossible() const
+    {
+      return is_learning_impossible_();
+    }
+
+    void zero_vars(std::vector<unsigned> & zeroes) const;
+
+    const unsigned * zero_needed_vars() const
+    {
+      return zerodeps_.data();
+    }
+
+    unsigned n_zero_needed_vars() const
+    {
+      return zerodeps_.size();
+    }
+
+    Ret optimize_zero_vars(bool flag=true);
+
+    bool is_optimizing_zero_vars() const
+    {
+      return zerovars_opt_();
     }
 
   private:
@@ -347,22 +381,19 @@ namespace fflow {
       return adata_(data).mat_;
     }
 
-    void get_dependent_variables_(AlgorithmData * data);
     Ret check_dependent_variables_(AlgorithmData * data) const;
 
-    bool is_learning_impossible_(const AlgorithmData * data) const
+    bool is_learning_impossible_() const
     {
-      return adata_(data).depv_.empty() && indepv_.empty();
+      return flag_ & IMPOSSIBLE_;
     }
 
-    bool has_max_row_() const
+    bool has_max_col_() const
     {
-      return output_is_sparse() && (maxrow_ < SparseMatrixRow::END);
+      return output_is_sparse() && (maxcol_ < SparseMatrixRow::END);
     }
 
-    void learn_needed_(AlgorithmData * data);
-
-    void get_independent_eqs_(AlgorithmData * data);
+    void set_ext_needed_(const unsigned * needed_vars, unsigned needed_size);
 
     void number_eqs_(AlgorithmData * data);
 
@@ -373,6 +404,24 @@ namespace fflow {
 
     static void mark_eq_(const SparseMatrix::EqDeps * eqdeps, unsigned eq,
                          bool * marked);
+
+    void get_outeq_pos_();
+
+    void relearn_needed_(AlgorithmData * data);
+
+    void get_needed_indep_();
+
+    bool check_zeroes_(AlgorithmData * data);
+    bool check_zeroes_onlynonhomog_(AlgorithmData * data);
+
+    void relearn_zero_needed_();
+
+    void optimize_nonneeded_indeps_();
+
+    bool zerovars_opt_() const
+    {
+      return (flag_ & ZEROVAR_OPTIMIZATION);
+    }
 
   private:
 
@@ -387,22 +436,33 @@ namespace fflow {
       FIRST_ = 0, SECOND_ = 1, LEARNED_ = 2
     };
 
+    enum LSFlag_ {
+      NO_BACKSUBST_ = 1,
+      HOMOG_ = 1 << 1,
+      MARKED_AND_SWEEPED_ = 1 << 2,
+      IMPOSSIBLE_ = 1 << 3,
+      KEEP_ALL_OUTS_ = 1 << 4, // only when maxcol_ is specified
+      ONLY_NON_HOMOG_ = 1 << 5,
+      ZEROVAR_OPTIMIZATION = 1 << 6
+    };
+
+
+
   private:
-    // std::vector<std::size_t> depv_; // <-- Moved into AlgorithmData
-    std::vector<std::size_t> indepv_;
-    std::unique_ptr<std::size_t[]> needed_ext_;
-    std::unique_ptr<std::size_t[]> needed_dep_;
-    std::unique_ptr<std::size_t[]> needed_indep_;
-    std::unique_ptr<std::size_t[]> indepeqs_;
+    std::vector<unsigned> zerodeps_;
+    std::unique_ptr<unsigned[]> needed_dep_;
+    std::unique_ptr<unsigned[]> needed_indep_;
+    std::unique_ptr<unsigned[]> indepeqs_;
     std::unique_ptr<flag_t[]> xinfo_;
-    std::size_t neqs_, nvars_;
-    std::size_t nneeded_ext_;
-    std::size_t nndeps_ = 0, nnindeps_ = 0, nnindepeqs_ = 0;
+    std::unique_ptr<unsigned[]> outeq_pos_;
     std::vector<SparseMatrix::EqDeps> eqdeps_;
     std::unique_ptr<std::vector<std::vector<unsigned>>> sparseout_data_;
-    UInt maxrow_ =  SparseMatrixRow::END;
+    std::unique_ptr<int[]> eq_weight_;
+    unsigned neqs_, nvars_;
+    unsigned nndeps_ = 0, nnindeps_ = 0, nnindepeqs_ = 0;
+    unsigned maxcol_ =  SparseMatrixRow::END;
     flag_t stage_ = FIRST_;
-    bool backsubst_ = true, homog_ = false, marked_and_sweeped_ = false;
+    flag_t flag_;
   };
 
 } // namespace ampf

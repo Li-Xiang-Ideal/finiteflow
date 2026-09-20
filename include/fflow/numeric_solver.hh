@@ -35,7 +35,7 @@ namespace fflow {
     void delete_unneeded_eqs(AlgorithmData * data);
 
     virtual Ret fill_matrix(Context * ctxt,
-                            std::size_t n_rows, const std::size_t rows[],
+                            unsigned n_rows, const unsigned rows[],
                             AlgInput xi[], Mod mod,
                             AlgorithmData * data,
                             SparseMatrix & m) const override;
@@ -43,14 +43,18 @@ namespace fflow {
     virtual AlgorithmData::Ptr
     clone_data(const AlgorithmData * data) const override;
 
+  private:
+    void reset_flags_(AlgorithmData * data);
+
   public:
     struct RowInfo {
       std::size_t size;
       std::unique_ptr<unsigned[]> cols;
+      std::unique_ptr<std::size_t[]> idx;
     };
 
     std::vector<RowInfo> rinfo;
-    std::vector<std::unique_ptr<MPRational[]>> c;
+    std::vector<MPRational> c;
   };
 
 } // namespace fflow

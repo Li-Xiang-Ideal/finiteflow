@@ -1,8 +1,19 @@
 #include <thread>
 #include <chrono>
 #include <fflow/graph.hh>
+#include <fflow/mp_gcd.hh>
+
+#define ENSURE_G_MUTABLE(g)           \
+  do {                                \
+    if (!((g).is_mutable())) {        \
+      logerr("Graph is not mutable"); \
+      return ALG_NO_ID;               \
+    }                                 \
+  } while (0)
 
 namespace fflow {
+
+  Global<Session> global_session;
 
   Node::~Node()
   {
@@ -73,16 +84,20 @@ namespace fflow {
                            std::unique_ptr<AlgorithmData> && algdata,
                            const unsigned * inputs)
   {
-    if (!is_mutable())
-      return ALG_NO_ID;
+    ENSURE_G_MUTABLE(*this);
 
     // check number inputs is consistent
     unsigned ninputs = (*alg).nparsin.size();
-    for (unsigned j=0; j<ninputs; ++j)
-      if (!node_exists(inputs[j])
-          || nodes_[inputs[j]]->alg_->nparsout != alg->nparsin[j]) {
+    for (unsigned j=0; j<ninputs; ++j) {
+      if (!node_exists(inputs[j])) {
+        logerr("Input node does not exist");
         return ALG_NO_ID;
       }
+      if (nodes_[inputs[j]]->alg_->nparsout != alg->nparsin[j]) {
+        logerr("Input nodes do not have the expected length");
+        return ALG_NO_ID;
+      }
+    }
 
     // allocate new node
     unsigned id = get_free_node_id_();
@@ -129,8 +144,10 @@ namespace fflow {
   unsigned Graph::delete_node_(unsigned id, bool force)
   {
     Node * n = node(id);
-    if (!n || (!force && !n->alg_->is_mutable()))
+    if (!n || (!force && !n->alg_->is_mutable())) {
+      logerr("Deleting non-existing or immutable node");
       return ALG_NO_ID;
+    }
     if (id == out_node_)
       out_node_ = ALG_NO_ID;
     nodes_[id].reset();
@@ -156,6 +173,32 @@ namespace fflow {
     }
 
     return id;
+  }
+
+  unsigned Graph::peek_new_node_id() const
+  {
+    if (!free_node_slots_.empty()) {
+
+      return free_node_slots_.back();
+
+    } else if (input_vars_not_set()) {
+
+      return 1;
+
+    } else {
+
+      return nodes_.size();
+
+    }
+  }
+
+  void Session::active_graph_ids(std::vector<unsigned> & graph_ids)
+  {
+    graph_ids.clear();
+    unsigned max_id = graphs_.size();
+    for (unsigned j=0; j<max_id; ++j)
+      if (graphs_[j].get())
+        graph_ids.push_back(j);
   }
 
   unsigned Graph::edges(std::vector<unsigned> & out) const
@@ -221,18 +264,15 @@ namespace fflow {
 
   unsigned Graph::set_input_vars(unsigned nvars)
   {
-    if (!is_mutable())
-      return ALG_NO_ID;
+    ENSURE_G_MUTABLE(*this);
 
     if (nodes_.empty()) {
       nodes_.push_back(std::unique_ptr<Node>(new Node()));
       nodes_[0]->alg_.reset(new InputAlgorithm());
     } else if (!(nodes_[0]->alg_->is_mutable())) {
+      logerr("Input node is not mutable");
       return ALG_NO_ID;
     }
-
-    if (!(nodes_[0]->alg_->is_mutable()))
-      return ALG_NO_ID;
 
     nodes_[0]->alg_->nparsout = nvars;
     nodes_[0]->depth_ = 0;
@@ -261,11 +301,12 @@ namespace fflow {
 
   unsigned Graph::set_output_node(unsigned id)
   {
-    if (!is_mutable())
-      return ALG_NO_ID;
+    ENSURE_G_MUTABLE(*this);
 
-    if (!node_exists(id))
+    if (!node_exists(id)) {
+      logerr("Selected output node does not exist");
       return ALG_NO_ID;
+    }
 
     if (id != out_node_) {
 
@@ -274,8 +315,12 @@ namespace fflow {
       comput_seq_.clear();
       for (unsigned j=0; j<nodes_.size(); ++j)
         if (node_is_marked_(j)) {
-          if (j != id && !nodes_[j]->alg_->has_learned())
+          if (j != id && !nodes_[j]->alg_->has_learned()) {
+            logerr(format("Selected output node depends on node {} "
+                          "which has not completed its learning phase.",
+                          j));
             return ALG_NO_ID;
+          }
           comput_seq_.push_back(j);
         }
       const auto * nodes = nodes_.data();
@@ -404,7 +449,9 @@ namespace fflow {
         continue;
       }
       Algorithm & alg = *node->algorithm();
-      if (all_nodes || mark_nodes_[idx])
+      if (0==idx && alg.nparsout)
+        adataout.xout_[idx].resize(alg.nparsout);
+      else if (all_nodes || mark_nodes_[idx])
         if (adataout.algdata_[idx].get() == nullptr) {
           adataout.algdata_[idx] = alg.clone_data(adatain.algdata_[idx].get());
           adataout.xout_[idx].resize(alg.nparsout);
@@ -478,12 +525,23 @@ namespace fflow {
     return graphs_.size() > id && graphs_[id].get() != nullptr;
   }
 
-  bool Session::graph_can_be_evaluated(unsigned id) const
+  bool Session::graph_can_be_evaluated(unsigned id,
+                                       bool check_learned) const
   {
     const Graph * g = graph(id);
-    if (!g)
+    if (!g) {
+      logerr("The graph does not exist");
       return false;
-    return g->out_node_id() != ALG_NO_ID;
+    }
+    if (g->out_node_id() == ALG_NO_ID) {
+      logerr("Output node not set");
+      return false;
+    }
+    if (check_learned && !(g->out_node()->alg_.get()->has_learned())) {
+      logerr("Output node has not learned");
+      return false;
+    }
+    return true;
   }
 
   Node * Session::node(unsigned graphid, unsigned nodeid)
@@ -601,6 +659,13 @@ namespace fflow {
     return graphs_[graphid]->set_output_node(nodeid);
   }
 
+  unsigned Session::get_output_node(unsigned graphid) const
+  {
+    if (!graph_exists(graphid))
+      return ALG_NO_ID;
+    return graphs_[graphid]->out_node_;
+  }
+
   unsigned Session::set_node_mutable(unsigned graphid, unsigned nodeid)
   {
     if (!node_exists(graphid, nodeid))
@@ -608,8 +673,7 @@ namespace fflow {
 
     Graph * g = graph(graphid);
 
-    if (!g->is_mutable())
-      return ALG_NO_ID;
+    ENSURE_G_MUTABLE(*g);
 
     for (const auto & node : g->nodes_)
       if (node.get())
@@ -628,8 +692,7 @@ namespace fflow {
       return ALG_NO_ID;
 
     Graph * graph = graphs_[graphid].get();
-    if (!graph->is_mutable())
-      return ALG_NO_ID;
+    ENSURE_G_MUTABLE(*graph);
 
     for (auto & node : graph->nodes_) {
       if (!graph->mark_nodes_[node->id()])
@@ -719,7 +782,7 @@ namespace fflow {
 
   Ret Session::learn(unsigned graphid)
   {
-    if (!graph_can_be_evaluated(graphid))
+    if (!graph_can_be_evaluated(graphid,false))
       return FAILED;
 
     Graph & graph = *graphs_[graphid];
@@ -727,6 +790,12 @@ namespace fflow {
     Node * node = graph.out_node();
     if (!node)
       return FAILED;
+    if (!(node->alg_.get()->is_mutable())) {
+      logerr("Learning with an immutable output node "
+             "is not allowed");
+      return FAILED;
+    }
+
     const LearningOptions & opt = node->learn_opt;
 
     Ret ret = graph.learn_all(&ctxt_, Mod(BIG_UINT_PRIMES[opt.prime_no]),
@@ -1065,6 +1134,14 @@ namespace fflow {
       std::unique_ptr<UInt[]> xi(new UInt[a.nparsin[0]]);
       std::unique_ptr<UInt[]> xo(new UInt[a.nparsout]);
       Mod mod(BIG_UINT_PRIMES[0]);
+      {
+        // do a warm-up evaluation first, since first evaluation is
+        // often slower, so we only time the second one
+        for (unsigned i=0; i<a.nparsin[0]; ++i)
+          xi[i] = sample_uint(OFFSET_1, 40 + i, mod);
+        const UInt * xiptr = xi.get();
+        a.evaluate(&ctxt_, &xiptr, mod, ctxt_.graph_data(graphid), xo.get());
+      }
       for (unsigned i=0; i<a.nparsin[0]; ++i)
         xi[i] = sample_uint(OFFSET_1, 20 + i, mod);
       const UInt * xiptr = xi.get();
@@ -1077,30 +1154,36 @@ namespace fflow {
     }
   }
 
-  void Session::sample(unsigned graphid, const ReconstructionOptions & opt,
-                       SamplePointsGenerator * samplegen)
+  Ret Session::sample(unsigned graphid, const ReconstructionOptions & opt,
+                      SamplePointsGenerator * samplegen)
   {
     if (!graph_can_be_evaluated(graphid))
-      return;
+      return FAILED;
     Graph & a = *graphs_[graphid];
 
-    if (!a.nparsin[0])
-      return;
+    if (!a.nparsin[0] && samplegen == nullptr)
+      return FAILED;
 
-    if (!a.rec_data_.get()) {
-      if (a.nparsin[0] == 1)
-        make_reconstructible_(a.id_);
-      else
-        return;
-    }
+    if (!a.rec_data_.get())
+      make_reconstructible_(a.id_);
 
     SamplePointsVector samples;
     if (samplegen == nullptr) {
+
+      if (a.nparsin[0] != 1 && !a.rec_data_->degs_avail()) {
+        logerr("Degrees must be available before generating sample points.");
+        return FAILED;
+      }
       gen_sample_points_(graphid, samples, opt);
+
     } else {
+
       Ret dret = samplegen->load_samples(a.nparsin[0], a.nparsout, samples);
-      if (dret != SUCCESS)
-        return;
+      if (dret != SUCCESS) {
+        logerr("Failed to load sample points");
+        return dret;
+      }
+
     }
 
     Graph::AlgRecData & arec = a.rec_data();
@@ -1121,6 +1204,8 @@ namespace fflow {
                                       samples.data(),
                                       samples.data() + samples.size(),
                                       cache);
+
+    return SUCCESS;
   }
 
   struct GraphParallelEvaluate {
@@ -1140,41 +1225,45 @@ namespace fflow {
   };
 
 
-  void Session::parallel_sample(unsigned graphid, unsigned nthreads,
-                                const ReconstructionOptions & opt,
-                                SamplePointsGenerator * samplegen)
+  Ret Session::parallel_sample(unsigned graphid, unsigned nthreads,
+                               const ReconstructionOptions & opt,
+                               SamplePointsGenerator * samplegen)
   {
-    if (nthreads == 1) {
-      sample(graphid, opt, samplegen);
-      return;
-    }
+    if (nthreads == 1)
+      return sample(graphid, opt, samplegen);
 
     if (nthreads == 0)
       nthreads = std::thread::hardware_concurrency();
 
     if (!graph_can_be_evaluated(graphid))
-      return;
+      return FAILED;
     Graph & a = *graphs_[graphid];
 
-    if (!a.nparsin[0])
-      return;
+    if (!a.nparsin[0] && samplegen == nullptr)
+      return FAILED;
 
-    if (!a.rec_data_.get()) {
-      if (a.nparsin[0] == 1)
-        make_reconstructible_(a.id_);
-      else
-        return;
-    }
+    if (!a.rec_data_.get())
+      make_reconstructible_(a.id_);
 
     Graph::AlgRecData & arec = a.rec_data();
 
     SamplePointsVector samples;
     if (samplegen == nullptr) {
+
+      if (a.nparsin[0] != 1 && !a.rec_data_->degs_avail()) {
+        logerr("Degrees must be available before generating sample points.");
+        return FAILED;
+      }
       gen_sample_points_(graphid, samples, opt);
+
     } else {
+
       Ret dret = samplegen->load_samples(a.nparsin[0], a.nparsout, samples);
-      if (dret != SUCCESS)
-        return;
+      if (dret != SUCCESS) {
+        logerr("Failed to load sample points");
+        return dret;
+      }
+
     }
 
     const unsigned tot_samples = samples.size();
@@ -1214,6 +1303,8 @@ namespace fflow {
 
     UIntCache  & cache = *arec.cache;
     merge_function_caches(caches.data(), nthreads, cache);
+
+    return SUCCESS;
   }
 
   Ret Session::dump_sample_points(unsigned graphid,
@@ -1227,11 +1318,14 @@ namespace fflow {
     if (!a.nparsin[0])
       return FAILED;
 
-    if (!a.rec_data_.get()) {
-      if (a.nparsin[0] == 1)
+    if (a.nparsin[0] == 1) {
+      if (!a.rec_data_.get())
         make_reconstructible_(a.id_);
-      else
+    } else {
+      if (!a.rec_data_.get() || !a.rec_data_->degs_avail()) {
+        logerr("Degrees must be available before generating sample points.");
         return FAILED;
+      }
     }
 
     SamplePointsVector samples;
@@ -1252,8 +1346,11 @@ namespace fflow {
       return FAILED;
     Graph & a = *graphs_[graphid];
 
-    if (!a.nparsin[0] || a.nparsout<1)
-      return FAILED;
+    if (a.nparsout<1) {
+      res.clear();
+      res.reserve(input.size());
+      return SUCCESS;
+    }
 
     if (!a.rec_data_.get())
       make_reconstructible_(a.id_);
@@ -1340,11 +1437,14 @@ namespace fflow {
     if (!a.nparsin[0])
       return FAILED;
 
-    if (!a.rec_data_.get()) {
-      if (a.nparsin[0] == 1)
+    if (a.nparsin[0] == 1) {
+      if (!a.rec_data_.get())
         make_reconstructible_(a.id_);
-      else
+    } else {
+      if (!a.rec_data_.get() || !a.rec_data_->degs_avail()) {
+        logerr("Degrees must be loaded before evaluations.");
         return FAILED;
+      }
     }
 
     Graph::AlgRecData & arec = a.rec_data();
@@ -1408,7 +1508,9 @@ namespace fflow {
                                       vdegs);
   }
 
-  Ret Session::load_degrees(unsigned graphid, const char * file)
+  Ret Session::load_or_set_degrees_(unsigned graphid,
+                                    const char * file,
+                                    const unsigned * data)
   {
     if (!graph_can_be_evaluated(graphid))
       return FAILED;
@@ -1433,10 +1535,27 @@ namespace fflow {
     for (unsigned i=0; i<nparsout; ++i)
       degs.vdegs[i].resize(nparsin);
 
-    return algorithm_load_degree_info(file, a.nparsin[0], a.nparsout,
-                                      degs.numdeg.get(),
-                                      degs.dendeg.get(),
-                                      degs.vdegs.get());
+    if (file)
+      return algorithm_load_degree_info(file, a.nparsin[0], a.nparsout,
+                                        degs.numdeg.get(),
+                                        degs.dendeg.get(),
+                                        degs.vdegs.get());
+    else if (data)
+      return algorithm_set_degree_info(data, a.nparsin[0], a.nparsout,
+                                       degs.numdeg.get(),
+                                       degs.dendeg.get(),
+                                       degs.vdegs.get());
+    else return FAILED;
+  }
+
+  Ret Session::load_degrees(unsigned graphid, const char * file)
+  {
+    return load_or_set_degrees_(graphid, file, 0);
+  }
+
+  Ret Session::set_degrees(unsigned graphid, const unsigned * data)
+  {
+    return load_or_set_degrees_(graphid, 0, data);
   }
 
   Ret Session::reconstruct_(unsigned graphid,
@@ -1517,13 +1636,16 @@ namespace fflow {
     return final_ret;
   }
 
-  void Session::set_up_to_rec_(unsigned id, std::vector<unsigned> & to_rec)
+  Ret Session::set_up_to_rec_(unsigned id, std::vector<unsigned> & to_rec)
   {
     if (!graph_can_be_evaluated(id))
-      return;
+      return FAILED;
     Graph & a = *graphs_[id];
-    if (!a.rec_data_.get())
-      return;
+    if (!a.rec_data_.get() ||
+        (a.nparsin[0] != 1 && !a.rec_data_->degs_avail())) {
+      logerr("Info on degrees and evaluations are missing.");
+      return FAILED;
+    }
     Graph::AlgRecData & arec = a.rec_data();
 
     if (!arec.completed_.get()) {
@@ -1537,6 +1659,7 @@ namespace fflow {
         if (!arec.completed_[j])
           to_rec.push_back(j);
     }
+    return SUCCESS;
   }
 
   void Session::move_rec_(unsigned id, MPReconstructedRatFun res[])
@@ -1554,7 +1677,8 @@ namespace fflow {
                            const ReconstructionOptions & opt)
   {
     std::vector<unsigned> to_rec;
-    set_up_to_rec_(id, to_rec);
+    if (set_up_to_rec_(id, to_rec) != SUCCESS)
+      return FAILED;
     Ret ret = reconstruct_(id, 0, 1, to_rec, opt);
     if (ret == SUCCESS)
       move_rec_(id, res);
@@ -1566,7 +1690,8 @@ namespace fflow {
   {
     Mod mod(prime_no(opt.start_mod));
     std::vector<unsigned> to_rec;
-    set_up_to_rec_(id, to_rec);
+    if (set_up_to_rec_(id, to_rec) != SUCCESS)
+      return FAILED;
     Ret ret = reconstruct_mod_(id, 0, 1, to_rec, opt, mod);
     if (ret == SUCCESS)
       move_rec_(id, res);
@@ -1616,7 +1741,13 @@ namespace fflow {
       return FAILED;
 
     std::vector<unsigned> to_rec;
-    set_up_to_rec_(graphid, to_rec);
+    if (set_up_to_rec_(graphid, to_rec) != SUCCESS)
+      return FAILED;
+
+    if (!graphs_[graphid]->rec_data_->cache.get()) {
+      logerr("Evaluations are not available");
+      return FAILED;
+    }
 
     nthreads = std::min(nthreads, unsigned(to_rec.size()));
     alloc_threads_(nthreads);
@@ -1659,7 +1790,13 @@ namespace fflow {
       return FAILED;
 
     std::vector<unsigned> to_rec;
-    set_up_to_rec_(graphid, to_rec);
+    if (set_up_to_rec_(graphid, to_rec) != SUCCESS)
+      return FAILED;
+
+    if (!graphs_[graphid]->rec_data_->cache.get()) {
+      logerr("Evaluations are not available");
+      return FAILED;
+    }
 
     nthreads = std::min(nthreads, unsigned(to_rec.size()));
     alloc_threads_(nthreads);
@@ -1692,8 +1829,10 @@ namespace fflow {
     if (!graph_can_be_evaluated(graphid))
       return FAILED;
     Graph & a = *graphs_[graphid];
-    if (a.nparsin[0] != 1)
+    if (a.nparsin[0] != 1) {
+      logerr("Univariate reconstruction called on multivariate graph.");
       return FAILED;
+    }
     make_reconstructible_(graphid);
     Graph::AlgRecData & arec = a.rec_data();
 
@@ -1709,8 +1848,10 @@ namespace fflow {
     if (!graph_can_be_evaluated(graphid))
       return FAILED;
     Graph & a = *graphs_[graphid];
-    if (a.nparsin[0] != 1)
+    if (a.nparsin[0] != 1) {
+      logerr("Univariate reconstruction called on multivariate graph.");
       return FAILED;
+    }
     make_reconstructible_(graphid);
     Graph::AlgRecData & arec = a.rec_data();
 
@@ -1727,8 +1868,10 @@ namespace fflow {
     if (!graph_can_be_evaluated(graphid))
       return FAILED;
     Graph & a = *graphs_[graphid];
-    if (a.nparsin[0] != 0)
+    if (a.nparsin[0] != 0) {
+      logerr("Numeric function called on graph with input node.");
       return FAILED;
+    }
     make_reconstructible_(graphid);
     return algorithm_reconstruct_numeric(a, ctxt_.graph_data(graphid), &ctxt_,
                                          opt, res);
@@ -1815,7 +1958,7 @@ namespace fflow {
     if (var >= nparsin)
       return FAILED;
 
-    std::unique_ptr<UInt> xdata(new UInt[nparsin+2*nparsout]);
+    std::unique_ptr<UInt[]> xdata(new UInt[nparsin+2*nparsout]);
 
     UInt * xin = xdata.get();
     UInt * xout1 = xdata.get() + nparsin;
@@ -1918,6 +2061,49 @@ namespace fflow {
     return nsamples;
   }
 
+
+  // Additional utilities
+
+  struct ParallelRatRec {
+
+    void operator() (const MPInt z[], unsigned n,
+                     const MPInt & mod, MPRational q[])
+    {
+      for (unsigned j=0; j<n; ++j)
+        rat_rec(z[j], mod, q[j]);
+    }
+  };
+
+  void Session::parallel_rat_rec(const MPInt z[], unsigned n,
+                                 const MPInt & mod,
+                                 MPRational q[], unsigned nthreads)
+  {
+    if (nthreads == 1) {
+      auto task = ParallelRatRec();
+      task(z, n, mod, q);
+      return;
+    }
+
+    if (nthreads == 0)
+      nthreads = std::thread::hardware_concurrency();
+
+    nthreads = std::min(nthreads, n);
+    std::vector<ParallelRatRec> task(nthreads);
+    std::vector<std::future<void>> ret(nthreads);
+
+    alloc_threads_(nthreads);
+    unsigned start = 0;
+    for (unsigned i=0; i<nthreads; ++i) {
+      const unsigned nt = n/nthreads + (i < (n % nthreads));
+      ret[i] = enqueue_(task[i], z+start, nt, mod, q+start);
+      start += nt;
+    }
+
+    for (unsigned i=0; i<nthreads; ++i)
+      ret[i].get();
+  }
+
+
   Session::~Session()
   {
     graphs_.clear();
@@ -1926,6 +2112,55 @@ namespace fflow {
   unsigned Session::default_nthreads()
   {
     return std::thread::hardware_concurrency();
+  }
+
+
+  GraphExtParallelEvaluator::GraphExtParallelEvaluator(Session & s,
+                                                       unsigned graphid,
+                                                       unsigned nthreads)
+    : session(nullptr), graph(nullptr), synched(nullptr), n_threads(nthreads)
+  {
+    if (!s.graph_can_be_evaluated(graphid))
+      return;
+    Graph & a = *s.graphs_[graphid];
+
+    s.init_subcontexts_(n_threads);
+
+    session = &s;
+    graph.reset(&a);
+    graph->set_immutable();
+    synched.reset(new bool[n_threads]());
+    graph->subgraph_count_ += 1;
+  }
+
+  GraphExtParallelEvaluator::~GraphExtParallelEvaluator()
+  {
+    if (!session)
+      return;
+
+    graph->subgraph_count_ -= 1;
+    if (graph->subgraph_count_ == 0)
+      graph->set_mutable();
+  }
+
+  Ret GraphExtParallelEvaluator::evaluate(const UInt xin[], Mod mod,
+                                          unsigned thread_id,
+                                          UInt xout[])
+  {
+    if (FF_ERRCOND(thread_id >= n_threads)) {
+      logerr("Invalid thread ID");
+      return FAILED;
+    }
+
+    Context * ctxt = &session->sub_ctxt_[thread_id];
+    const unsigned graphid = graph->id_;
+
+    if (FF_ERRCOND(!synched[thread_id])) {
+      session->share_with_subctxt_(graphid, *ctxt);
+      synched[thread_id] = true;
+    }
+
+    return graph->evaluate(ctxt, &xin, mod, ctxt->graph_data(graphid), xout);
   }
 
 

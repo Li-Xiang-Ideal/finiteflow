@@ -653,6 +653,11 @@ namespace fflow {
       return monomials_.data();
     }
 
+    const Monomial & monomial(std::size_t i) const
+    {
+      return monomials_[i];
+    }
+
     // undefined if *this.is_zero()
     const Monomial & lowest()
     {
@@ -917,18 +922,13 @@ namespace fflow {
   };
 
 
-  // this is thrown if a multivariate method is called for the
+  // this is called if a multivariate method is called for the
   // univariate implementation case
-#ifdef FFLOW_USE_EXCEPTIONS
-  struct UnivariateException: public std::runtime_error {
-    UnivariateException()
-      : std::runtime_error("Calling multivariate method "
-                           "on univariate polynomial") {}
-  };
-#endif
   inline void univariate_error()
   {
-    FFLOW_THROW(UnivariateException());
+    logerr("Internal error: calling multivariate method "
+           "on univariate polynomial");
+    std::terminate();
   }
 
 

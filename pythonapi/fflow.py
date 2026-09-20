@@ -8,6 +8,8 @@ WARNING: This is a w.i.p. and the API is not stable yet.
 
 from _cffi_fflow import lib as _lib, ffi as _ffi
 from itertools import chain as _chain
+from random import randint as _randint
+from contextlib import contextmanager as _contextmanager
 
 
 _FF_SUCCESS = 0
@@ -17,50 +19,64 @@ _FF_MISSING_PRIMES = _FF_ERROR - 2
 _FF_FAILED = 2**64 - 1
 
 
-class Singleton(type):
-    _instances = {}
-    def __call__(cls, *args, **kwargs):
-        if cls not in cls._instances:
-            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
-        return cls._instances[cls]
+class _CDefine:
+    pass
+
+cdef = _CDefine()
+cdef.FF_SUCCESS = _FF_SUCCESS
+cdef.FF_ERROR = _FF_ERROR
+cdef.FF_MISSING_POINTS = _FF_MISSING_POINTS
+cdef.FF_MISSING_PRIMES = _FF_MISSING_PRIMES
+cdef.FF_FAILED = _FF_FAILED
 
 
-class _SuccessType(metaclass=Singleton):
-    def __str__(self):
-        return 'SUCCESS'
+class Success:
+    def __eq__(self, other):
+        return type(self) is type(other)
     def __repr__(self):
         return 'fflow.SUCCESS'
 
 
-class _ErrorType(Exception,metaclass=Singleton):
-    def __str__(self):
-        return 'ERROR'
+class FFlowError(Exception):
+    def __init__(self):
+        super().__init__("FiniteFlow detected an error "
+                         "(check for any FF_LOG messages).")
+    def __eq__(self, other):
+        return type(self) is type(other)
     def __repr__(self):
         return 'fflow.ERROR'
 
 
-class _MissingPointsType(metaclass=Singleton):
-    def __str__(self):
-        return 'MISSING_POINTS'
+class MissingPoints(Exception):
+    def __init__(self):
+        super().__init__("Reconstruction failed: MISSING POINTS.")
+    def __eq__(self, other):
+        return type(self) is type(other)
     def __repr__(self):
         return 'fflow.MISSING_POINTS'
 
 
-class _MissingPrimesType(metaclass=Singleton):
-    def __str__(self):
-        return 'MISSING_PRIMES'
+class MissingPrimes(Exception):
+    def __init__(self):
+        super().__init__("Reconstruction failed: MISSING PRIMES.")
+    def __eq__(self, other):
+        return type(self) is type(other)
     def __repr__(self):
         return 'fflow.MISSING_PRIMES'
 
 
-class _FailedType(Exception,metaclass=Singleton):
-    def __str__(self):
-        return 'FAILED'
+class Failed(Exception):
+    def __init__(self):
+        super().__init__("Evaluation or reconstruction failed "
+                         "(check for any FF_LOG messages).")
+    def __eq__(self, other):
+        return type(self) is type(other)
     def __repr__(self):
         return 'fflow.FAILED'
 
 
 class RatFunList:
+    '''An opaque object representing a list of rational functions.'''
     def __init__(self):
         self._ptr = _ffi.NULL
 
@@ -80,51 +96,197 @@ class RatFunList:
             return 0
         return _lib.ffRatFunListNVars(self._ptr)
 
+    def _poly_coeffs(self,gettems,getcoeffs,idx):
+        nterms = _Check(gettems(self._ptr,idx))
+        ccoeffs = getcoeffs(self._ptr,idx)
+        ret = list(_ffi.string(ccoeffs[i]).decode() for i in range(nterms))
+        _lib.ffFreeCStrArray(ccoeffs)
+        return ret
 
+    def num_coeffs(self,idx=None):
+        if idx is None:
+            return list(self.num_coeffs(i) for i in range(self.size()))
+        else:
+            return self._poly_coeffs(_lib.ffRatFunNumNTerms,
+                                     _lib.ffRatFunNumCoeffs, idx)
 
-SUCCESS = _SuccessType()
-ERROR = _ErrorType()
-MISSING_POINTS = _MissingPointsType()
-MISSING_PRIMES = _MissingPrimesType()
-FAILED = _FailedType()
+    def den_coeffs(self,idx=None):
+        if idx is None:
+            return list(self.den_coeffs(i) for i in range(self.size()))
+        else:
+            return self._poly_coeffs(_lib.ffRatFunDenNTerms,
+                                     _lib.ffRatFunDenCoeffs, idx)
+
+    def coeffs(self,idx=None):
+        if idx is None:
+            return list(self.coeffs(i) for i in range(self.size()))
+        else:
+            return (self.num_coeffs(idx), self.den_coeffs(idx))
+
+    def _poly_exponents(self,getterms,getexps,idx):
+        nterms = _Check(getterms(self._ptr,idx))
+        nv = self.nvars()
+        exps = getexps(self._ptr,idx)
+        ret = list(tuple(exps[i*nv: i*nv+nv]) for i in range(nterms))
+        _lib.ffFreeMemoryU16(exps)
+        return ret
+
+    def num_exponents(self,idx=None):
+        if idx is None:
+            return list(self.num_exponents(i)
+                        for i in range(self.size()))
+        else:
+            return self._poly_exponents(_lib.ffRatFunNumNTerms,
+                                        _lib.ffRatFunNumExponents, idx)
+
+    def den_exponents(self,idx=None):
+        if idx is None:
+            return list(self.den_exponents(i)
+                        for i in range(self.size()))
+        else:
+            return self._poly_exponents(_lib.ffRatFunDenNTerms,
+                                        _lib.ffRatFunDenExponents, idx)
+
+    def exponents(self,idx=None):
+        if idx is None:
+            return list(self.exponents(i) for i in range(self.size()))
+        else:
+            return (self.num_exponents(idx), self.den_exponents(idx))
+
+    def num_monomials(self,idx=None):
+        if idx is None:
+            return list(self.num_monomials(i) for i in range(self.size()))
+        else:
+            return list(zip(self.num_coeffs(idx), self.num_exponents(idx)))
+
+    def den_monomials(self,idx=None):
+        if idx is None:
+            return list(self.den_monomials(i) for i in range(self.size()))
+        else:
+            return list(zip(self.den_coeffs(idx), self.den_exponents(idx)))
+
+    def monomials(self,idx=None):
+        if idx is None:
+            return list(self.monomials(i) for i in range(self.size()))
+        else:
+            return (self.num_monomials(idx), self.den_monomials(idx))
+
+    def to_string(self,svars,idx=None):
+        if len(svars) != self.nvars():
+            raise ValueError("List svars must have the same length as the "
+                             "number of variables self.nvars()")
+        if idx is None:
+            return list(self.to_string(svars,i) for i in range(self.size()))
+        else:
+            cvars = [_ffi.new("char[]", x.encode('utf8')) for x in svars]
+            cstr = _lib.ffRatFunToStr(self._ptr,idx,cvars)
+            if cstr == _ffi.NULL:
+                raise FFlowError()
+            ret = _ffi.string(cstr).decode()
+            _lib.ffFreeCStr(cstr)
+            return ret
+
+class IdxRatFunList:
+    '''\
+An opaque object representing an indexed list of rational functions,
+namely a list of functions and a list of indexes into the list of
+functions.  The indexes are meant avoid repetition of equal entries in
+the list.
+
+It is used to define sparse linear systems, which often have many
+repeated entries.
+
+As an example using
+    functions = [f0,f1,f2]
+    indexes = [0,0,1,2,2,0]
+would be effectively equivalent to the list
+    functions = [f0,f0,f1,f2,f2,f0]
+but storing the functions [f0,f1,f2] only once.
+
+Note that the builtin len() function and the .size() method return
+the length of the list of indexes.  Use the method .nfunctions() to
+get the list of unique functions instead.
+
+    '''
+    def __init__(self):
+        self._ptr = _ffi.NULL
+
+    def __del__(self):
+        _lib.ffFreeIdxRatFun(self._ptr)
+
+    def size(self):
+        if self._ptr == _ffi.NULL:
+            return 0
+        return _lib.ffIdxRatFunListSize(self._ptr)
+
+    def nfunctions(self):
+        if self._ptr == _ffi.NULL:
+            return 0
+        return _lib.ffIdxRatFunListNFunctions(self._ptr)
+
+    def __len__(self):
+        return self.size()
+
+    def nvars(self):
+        if self._ptr == _ffi.NULL:
+            return 0
+        return _lib.ffIdxRatFunListNVars(self._ptr)
+
 
 
 _to_status = {
-    _FF_SUCCESS : SUCCESS,
-    _FF_ERROR : ERROR,
-    _FF_MISSING_PRIMES : MISSING_PRIMES,
-    _FF_MISSING_POINTS : MISSING_POINTS
+    _FF_SUCCESS : Success,
+    _FF_ERROR : FFlowError,
+    _FF_MISSING_PRIMES : MissingPrimes,
+    _FF_MISSING_POINTS : MissingPoints
 }
 
 def _ToUint(z):
     if z == _FF_FAILED:
-        raise FAILED
+        raise Failed()
     return z
 
 def _Check(arg):
     if _lib.ffIsError(arg):
-        raise _to_status[arg]
+        raise _to_status[arg]()
     return arg
 
 def _CheckIter(arg):
     for v in arg:
         if _lib.ffIsError(v):
-            raise to_status[v]
+            raise to_status[v]()
     return arg
 
 def _StatusCheck(arg):
     if _lib.ffIsError(arg):
-        raise ERROR
-    return _to_status[arg]
+        raise FFlowError()
+    return _to_status[arg]()
+
+def _Flattened(data):
+    for el in data:
+        if type(el) is list or type(el) is tuple:
+            yield from _Flattened(el)
+        else:
+            yield el
 
 
 _lib.ffInit()
+
+FFLOW_VERSION = _lib.ffVersion()
+FFLOW_VERSION_MINOR = _lib.ffVersionMinor()
+__version__ = str(FFLOW_VERSION) + "." + str(FFLOW_VERSION_MINOR)
+
+def IsError(arg):
+    return _lib.ffIsError(arg)
 
 def MulInv(z, prime_no):
     return _ToUint(_lib.ffMulInv(z, prime_no))
 
 def PrimeNo(i):
-    return _ToUint(_lib.PrimeNo(i))
+    return _ToUint(_lib.ffPrimeNo(i))
+
+def NAvailablePrimes():
+    return _lib.ffNAvailablePrimes()
 
 def DefaultNThreads():
     return _lib.ffDefaultNThreads()
@@ -137,6 +299,47 @@ def NewGraphWithInput(nvars):
     graph = _lib.ffNewGraphWithInput(nvars, innode)
     return _CheckIter((graph, innode[0]))
 
+@_contextmanager
+def GraphContext():
+    '''GraphContext() defines a context that creates a graph using
+    NewGraph() and automatically deletes it at the end of the block
+    (even if an error occurs or an exception is raised).
+
+    Usage:
+
+        with GraphContext() as g:
+            <block using graph g>
+
+    See also GraphContextWithInput.
+
+    '''
+    g = NewGraph()
+    try:
+        yield g
+    finally:
+        DeleteGraph(g)
+
+@_contextmanager
+def GraphContextWithInput(n):
+    '''GraphContextWithInput() defines a context that creates a graph
+    with an input node using NewGraphWithInput() and automatically
+    deletes it at the end of the block (even if an error occurs or an
+    exception is raised).
+
+    Usage:
+
+        with GraphContextWithInput(n) as (g,inp):
+            <block using graph g and inputnode inp>
+
+    See also GraphContext.
+
+    '''
+    g,inp = NewGraphWithInput(n)
+    try:
+        yield g,inp
+    finally:
+        DeleteGraph(g)
+
 def NewGraphDummy(n_in, n_out):
     return _lib.ffNewGraphDummy(n_in, n_out)
 
@@ -145,6 +348,9 @@ def DeleteGraph(graph):
 
 def DeleteNode(graph, node):
     return _StatusCheck(_lib.ffDeleteNode(graph,node))
+
+def GetOutputNode(graph):
+    return _Check(_lib.ffGetOutputNode(graph))
 
 def SetOutputNode(graph, node):
     return _StatusCheck(_lib.ffSetOutputNode(graph,node))
@@ -158,6 +364,9 @@ def GraphNParsOut(graph):
 def NodeNParsOut(graph, node):
     return _Check(_lib.ffNodeNParsOut(graph,node))
 
+def PeekNewNodeId(graph):
+    return _Check(_lib.ffPeekNewNodeId(graph))
+
 def MakeNodeMutable(graph, node):
     return _StatusCheck(_lib.ffMakeNodeMutable(graph,node))
 
@@ -167,13 +376,19 @@ def PruneGraph(graph):
 def Learn(graph):
     return _StatusCheck(_lib.ffLearn(graph))
 
+def LearnEx(graph,**kwargs):
+    opt = _ffi.new("FFLearnOptions *",kwargs)
+    return _StatusCheck(_lib.ffLearnEx(graph, opt[0]))
+
 def EvaluateGraph(graph,z,primeno):
     nparsin = _lib.ffNodeNParsOut(graph,0)
-    if _lib.ffIsError(nparsin) or len(z) != nparsin:
-        raise FAILED
+    if _lib.ffIsError(nparsin):
+        raise RuntimeError("Graph or input node not available")
+    if len(z) != nparsin:
+        raise ValueError("Unexpected input length")
     retc = _lib.ffEvaluateGraph(graph,z,primeno)
     if retc == _ffi.NULL:
-        raise FAILED
+        raise Failed()
     ret = _ffi.unpack(retc,_lib.ffGraphNParsOut(graph))
     _lib.ffFreeMemoryU64(retc)
     return ret
@@ -186,6 +401,14 @@ def AlgMemoizedSubgraph(graph, in_nodes, subgraph):
     return _Check(_lib.ffAlgMemoizedSubgraph(graph,in_nodes,len(in_nodes),
                                              subgraph))
 
+def AlgSubgraphMap(graph, in_nodes, subgraph):
+    return _Check(_lib.ffAlgSubgraphMap(graph,in_nodes,len(in_nodes),
+                                        subgraph))
+
+def AlgSubgraphRec(graph, in_node, subgraph, n_rec_vars, shift_vars=True):
+    return _Check(_lib.ffAlgSubgraphRec(graph,in_node,subgraph,
+                                        n_rec_vars, shift_vars))
+
 def AlgJSONSparseLSolve(graph, in_node, json_file):
     return _Check(_lib.ffAlgJSONSparseLSolve(graph, in_node,
                                              json_file.encode('utf8')))
@@ -196,20 +419,29 @@ def AlgJSONRatFunEval(graph, in_node, json_file):
 
 def AlgRatFunEval(graph, in_node, rf):
     if not type(rf) is RatFunList:
-        raise TypeError("Third argument of AlgRatFunEval() must be a RatFunList")
+        raise TypeError("Third argument of AlgRatFunEval() "
+                        "must be a RatFunList")
     return _Check(_lib.ffAlgRatFunEval(graph, in_node, rf._ptr))
 
+def AlgRatFunEvalFromCoeffs(graph, coeffs_node, vars_node, rf):
+    if not type(rf) is RatFunList:
+        raise TypeError("Fourth argument of AlgRatFunEvalFromCoeffs() "
+                        "must be a RatFunList")
+    return _Check(_lib.ffAlgRatFunEvalFromCoeffs(graph,
+                                                 coeffs_node, vars_node,
+                                                 rf._ptr))
+
 def AlgRatNumEval(graph, nums):
-    cnums = [_ffi.new("char[]", x.encode('utf8')) for x in nums]
+    cnums = [_ffi.new("char[]", str(x).encode('utf8')) for x in nums]
     return _Check(_lib.ffAlgRatNumEval(graph, cnums, len(nums)))
 
 def AlgLaurent(graph, in_node, subgraph, order, max_deg=-1):
-    if type(order) is list:
+    if type(order) is list or type(order) is tuple:
         nout = _lib.ffGraphNParsOut(subgraph)
-        if _lib.ffIsError(nout) or len(z) != nout:
-            raise ERROR
+        if len(order) != nout:
+            raise ValueError("Unexpected length for `order`")
         return _Check(_lib.ffAlgLaurent(graph, in_node, subgraph,
-                                       order, max_deg))
+                                        order, max_deg))
     else:
         return _Check(_lib.ffAlgLaurentConstOrder(graph, in_node, subgraph,
                                                   order, max_deg))
@@ -224,7 +456,7 @@ def AlgChain(graph, in_nodes):
 def AlgTake(graph, in_nodes, elems):
     for x in elems:
         if len(x) != 2:
-            raise ERROR
+            raise ValueError("Each item in `elems` must have length 2.")
     return _Check(_lib.ffAlgTake(graph, in_nodes, len(in_nodes),
                                  [x for x in _chain(*elems)],
                                  len(elems)))
@@ -248,10 +480,22 @@ def AlgTakeAndAdd(graph, in_nodes, elems):
                                         [len(x) for x in elems],
                                         [y for y in nested(_chain(*elems))]))
 
+def AlgTakeAndAddBL(graph, in_nodes, elems):
+    def nested(chain_list):
+        for x in chain_list:
+            yield x[0]
+            yield x[1]
+            yield x[2]
+            yield x[3]
+    return  _Check(_lib.ffAlgTakeAndAddBL(graph, in_nodes, len(in_nodes),
+                                          len(elems),
+                                          [len(x) for x in elems],
+                                          [y for y in nested(_chain(*elems))]))
+
 def AlgSparseMatMul(graph, in_node_a, in_node_b, n_rows_a, n_cols_a, n_cols_b,
                     non_zeroes_a, non_zeroes_b):
     if len(non_zeroes_a) != n_rows_a or len(non_zeroes_b) != n_cols_a:
-        raise ERROR
+        raise ValueError("Inconsistent row data.")
     return _Check(_lib.ffAlgSparseMatMul(graph, in_node_a, in_node_b,
                                          n_rows_a, n_cols_a, n_cols_b,
                                          [len(x) for x in non_zeroes_a],
@@ -259,11 +503,20 @@ def AlgSparseMatMul(graph, in_node_a, in_node_b, n_rows_a, n_cols_a, n_cols_b,
                                          [len(x) for x in non_zeroes_b],
                                          [x for x in _chain(*non_zeroes_b)]))
 
+def AlgEvalCount(graph, in_node):
+    return _Check(_lib.ffAlgEvalCount(graph, in_node))
+
+def EvalCountGet(graph, node):
+    return _ToUint(_lib.ffEvalCountGet(graph, node))
+
+def EvalCountReset(graph, node, count=0):
+    return _ToUint(_lib.ffEvalCountReset(graph, node, count))
+
 
 def LaurentMaxOrders(graph, node):
     retc = _lib.ffLaurentMaxOrders(graph, node)
     if retc == _ffi.NULL:
-        raise ERROR
+        raise FFlowError()
     res =  _ffi.unpack(retc,_lib.ffSubgraphNParsout(graph, node))
     _lib.ffFreeMemoryS32(retc)
     return res
@@ -271,22 +524,64 @@ def LaurentMaxOrders(graph, node):
 def LaurentMinOrders(graph, node):
     retc = _lib.ffLaurentMinOrders(graph, node)
     if retc == _ffi.NULL:
-        raise ERROR
+        raise FFlowError()
     res =  _ffi.unpack(retc,_lib.ffSubgraphNParsout(graph, node))
     _lib.ffFreeMemoryS32(retc)
     return res
 
+def LaurentOutput(graph, node, elems):
+    """LaurentOutput(graph, node, elems) returns a list of lists with
+    elements (o,elems[j]) in the i-th list meaning that the
+    coefficient of O(x^o) in the Laurent expansion of the i-th element
+    of the output of subgraph is the j-th element of the output of the
+    Laurent node of graph (where x the expansion variable)
+
+    """
+    min_orders = LaurentMinOrders(graph,node)
+    max_orders = LaurentMaxOrders(graph,node)
+    def get_order_coeff_pairs(coeff_iter):
+        return list(
+            list((o,next(coeff_iter)) \
+                 for o in range(min_orders[i], max_orders[i]+1)
+                 ) for i in range(len(min_orders))
+        )
+    return list(get_order_coeff_pairs(iter(elems)))
+
+
+def LSolveNEqsNVars(graph, node):
+    ret = _ffi.new('unsigned[2]')
+    _StatusCheck(_lib.ffLSolveNEqsNVars(graph, node, ret))
+    return (int(ret[0]), int(ret[1]))
+
 
 def LSolveResetNeededVars(graph, node, needed_vars):
-    return _StatusCheck(_lib.ffLSolveResetNeededVars(graph, node, needed_vars, len(needed_vars)))
+    return _StatusCheck(_lib.ffLSolveResetNeededVars(graph, node, needed_vars,
+                                                     len(needed_vars)))
 
 
 def LSolveOnlyHomogeneous(graph, node):
     return _StatusCheck(_lib.ffLSolveOnlyHomogeneous(graph, node))
 
 
-def LSolveSparseOutput(graph, node, sparse : True):
+def LSolveOnlyNonHomogeneous(graph, node):
+    return _StatusCheck(_lib.ffLSolveOnlyNonHomogeneous(graph, node))
+
+
+def LSolveSparseOutput(graph, node, sparse=True):
     return _StatusCheck(_lib.ffLSolveSparseOutput(graph, node, sparse))
+
+
+def LSolveEqWeight(graph, node, eq_weight):
+    if not len(eq_weight) == LSolveNEqsNVars(graph,node)[0]:
+        raise ValueError("Equation weights have the wrong length.")
+    return _StatusCheck(_lib.ffLSolveEqWeight(graph, node, eq_weight))
+
+
+def LSolveSparseOutputWithMaxCol(graph, node, maxcol,
+                                 backsubst=True, keepfullout=False):
+    return _StatusCheck(_lib.ffLSolveSparseOutputWithMaxCol(graph, node,
+                                                            maxcol, backsubst,
+                                                            keepfullout))
 
 
 def LSolveMarkAndSweepEqs(graph, node):
@@ -297,6 +592,30 @@ def LSolveDeleteUnneededEqs(graph, node):
     return _StatusCheck(_lib.ffLSolveDeleteUnneededEqs(graph, node))
 
 
+def LSolveIsImpossible(graph,node):
+    ret = _Check(_lib.ffLSolveIsImpossible(graph, node))
+    return ret == 1
+
+
+def IsSparseLSolve(graph,node):
+    ret = _Check(_lib.ffIsSparseLSolve(graph, node))
+    return ret == 1
+
+
+def LSolveOutputIsSparse(graph,node):
+    ret = _Check(_lib.ffLSolveOutputIsSparse(graph, node))
+    return ret == 1
+
+
+def LSolveOptimizeZeroVars(graph, node):
+    return _StatusCheck(_lib.ffLSolveOptimizeZeroVars(graph, node))
+
+
+def LSolveIsOptimizingZeroVars(graph,node):
+    ret = _Check(_lib.ffLSolveIsOptimizingZeroVars(graph, node))
+    return ret == 1
+
+
 def LSolveNDepVars(graph, node):
     return _Check(_lib.ffLSolveNDepVars(graph, node))
 
@@ -304,7 +623,7 @@ def LSolveNDepVars(graph, node):
 def LSolveDepVars(graph, node):
     retc = _lib.ffLSolveDepVars(graph, node)
     if retc == _ffi.NULL:
-        raise ERROR
+        raise FFlowError()
     ret = _ffi.unpack(retc, _lib.ffLSolveNDepVars(graph, node))
     _lib.ffFreeMemoryU32(retc)
     return ret
@@ -317,40 +636,100 @@ def LSolveNIndepVars(graph, node, i=0):
 def LSolveIndepVars(graph, node, i=0):
     retc = _lib.ffLSolveIndepVars(graph, node, i)
     if retc == _ffi.NULL:
-        raise ERROR
+        raise FFlowError()
     ret = _ffi.unpack(retc, _lib.ffLSolveNIndepVars(graph, node, i))
     _lib.ffFreeMemoryU32(retc)
     return ret
 
 
+def LSolveNIndepEqs(graph, node):
+    return _Check(_lib.ffLSolveNIndepEqs(graph, node))
+
+
+def LSolveIndepEqs(graph, node):
+    retc = _lib.ffLSolveIndepEqs(graph, node)
+    if retc == _ffi.NULL:
+        raise FFlowError()
+    ret = _ffi.unpack(retc, _lib.ffLSolveNIndepEqs(graph, node))
+    _lib.ffFreeMemoryU32(retc)
+    return ret
+
+def LSolveZeroVars(graph, node):
+    zerovars = _ffi.new("unsigned **")
+    nzerovars = _ffi.new("unsigned *")
+    _StatusCheck(_lib.ffLSolveZeroVars(graph,node,zerovars,nzerovars))
+    ret = _ffi.unpack(zerovars[0], nzerovars[0])
+    _lib.ffFreeMemoryU32(zerovars[0])
+    return ret
+
+
 def RatFunToJSON(rf, json_file):
     if not type(rf) is RatFunList:
-        raise TypeError("First argument of RatFunToJSON() must be a RatFunList")
-    return _StatusCheck(_lib.ffEvaluateRatFunList(rf._ptr,
-                                                  json_file.encode('utf8')))
+        raise TypeError("First argument of RatFunToJSON() "
+                        "must be a RatFunList")
+    return _StatusCheck(_lib.ffRatFunToJSON(rf._ptr,
+                                            json_file.encode('utf8')))
 
 
 def ParseRatFun(variables, functions):
-    '''This uses a simple and limited parser of rational functions:
+    '''\
+This uses a simple and limited parser of rational functions:
 - functions must be collected under common denominator
 - numerators and denominators must be in expanded form
-- rational coefficients must be in front of their monomials
-  (e.g. "1/2 z" is ok but "z/2" is not)
+- rational coefficients must be in front of their monomials,
+  except for their denominator (e.g. "3/2 z" and "3z/2" are both
+  ok but "z 3/2" is not)
+This may also return valid rational functions for some invalid
+inputs.
 
-If these lmitations are too restrictive, consider using the parser of
-a proper CAS and then pass the functions to fflow using
-ffNewRatFunList instead.
-    '''
+If these limitations are too restrictive, consider using the parser of
+a proper CAS and then pass the functions to fflow using NewRatFunList
+instead.
+'''
     rf = [_ffi.new("char[]", x.encode('utf8')) for x in functions]
     rfl = [len(x) for x in functions]
     z = [_ffi.new("char[]", x.encode('utf8')) for x in variables]
 
     retc = _lib.ffParseRatFunEx(z, len(z), rf, rfl, len(rf))
     if retc == _ffi.NULL:
-        raise ERROR
+        raise FFlowError()
     ret = RatFunList()
     ret._ptr = retc
     return ret
+
+
+def MoveRatFunToIdx(ratfunlist, indexes):
+    funl = ratfunlist
+    if not type(funl) is RatFunList:
+        raise TypeError("Expected a RatFunList as input")
+    retc = _lib.ffMoveRatFunToIdx(funl._ptr, indexes, len(indexes))
+    if retc == _ffi.NULL:
+        raise FFlowError()
+    ret = IdxRatFunList()
+    ret._ptr = retc
+    return ret
+
+
+def _getUniqueAndIdx(somelist):
+    uni = dict()
+    ret = list()
+    for el in somelist:
+        if el in uni:
+            ret.append(uni[el])
+        else:
+            idx = len(uni)
+            ret.append(idx)
+            uni[el] = idx
+    return (list(k for k,v in sorted(uni.items(), key = lambda x : x[1])), ret)
+
+
+def ParseIdxRatFun(variables, functions, indexes = None):
+    if indexes is None:
+        (unique, indexes) = _getUniqueAndIdx(functions)
+    else:
+        unique = functions
+    ret0 = ParseRatFun(variables, unique)
+    return MoveRatFunToIdx(ret0, indexes)
 
 
 def AlgAnalyticSparseLSolve(graph, in_node, n_vars,
@@ -361,16 +740,16 @@ def AlgAnalyticSparseLSolve(graph, in_node, n_vars,
         needed = _ffi.NULL
         neededlen = 0
     else:
-        needelen = len(needed)
+        neededlen = len(needed)
     if sum(len(x) for x in non_zero_els) != len(non_zero_coeffs):
-        raise ERROR
-    retc = _lib.ffAlgAnalyticSparseLSolve(graph, in_node,
-                                          len(non_zero_els), n_vars,
-                                          [len(x) for x in non_zero_els],
-                                          [x for x in _chain(*non_zero_els)],
-                                          non_zero_coeffs._ptr,
-                                          needed,
-                                          neededlen)
+        raise ValueError("Inconsistent row data.")
+    retc = _lib.ffAlgAnalyticSparseLSolveIdx(graph, in_node,
+                                             len(non_zero_els), n_vars,
+                                             [len(x) for x in non_zero_els],
+                                             [x for x in _chain(*non_zero_els)],
+                                             non_zero_coeffs._ptr,
+                                             needed,
+                                             neededlen)
     return _Check(retc)
 
 
@@ -382,17 +761,17 @@ def AlgNumericSparseLSolve(graph, n_vars,
         needed = _ffi.NULL
         neededlen = 0
     else:
-        needelen = len(needed)
+        neededlen = len(needed)
     if sum(len(x) for x in non_zero_els) != len(non_zero_coeffs):
-        raise ERROR
-    coeffs = [_ffi.new("char[]", x.encode('utf8')) for x in non_zero_coeffs]
+        raise ValueError("Inconsistent row data.")
+    (uniqueccs, indexes) = _getUniqueAndIdx(non_zero_coeffs)
+    coeffs = [_ffi.new("char[]", x.encode('utf8')) for x in uniqueccs]
     retc = _lib.ffAlgNumericSparseLSolve(graph,
                                          len(non_zero_els), n_vars,
                                          [len(x) for x in non_zero_els],
                                          [x for x in _chain(*non_zero_els)],
-                                         coeffs,
-                                         needed,
-                                         neededlen)
+                                         indexes, coeffs, len(coeffs),
+                                         needed, neededlen)
     return _Check(retc)
 
 
@@ -404,7 +783,7 @@ def AlgNodeSparseLSolve(graph, in_node, n_vars,
         needed = _ffi.NULL
         neededlen = 0
     else:
-        needelen = len(needed)
+        neededlen = len(needed)
     retc = _lib.ffAlgNodeSparseLSolve(graph, in_node,
                                       len(non_zero_els), n_vars,
                                       [len(x) for x in non_zero_els],
@@ -414,6 +793,98 @@ def AlgNodeSparseLSolve(graph, in_node, n_vars,
     return _Check(retc)
 
 
+def AlgAnalyticSparseLSolveEx(graph, in_nodes, n_vars,
+                              non_zero_els, non_zero_coeffs,
+                              needed_vars = None):
+    needed = needed_vars
+    if needed is None:
+        needed = _ffi.NULL
+        neededlen = 0
+    else:
+        neededlen = len(needed)
+    nonzero_cols = [list(col for col,el in row) for row in non_zero_els]
+    nonzero_wgs = [tuple(tuple(_Flattened(el)) for col,el in row) \
+                   for row in non_zero_els]
+    two_n_wgs = sum(sum(len(y) for y in row) for row in nonzero_wgs)
+    if two_n_wgs != 2*len(non_zero_coeffs):
+        raise ValueError("Inconsistent data for rows or weights.")
+    n_weights = [tuple(len(sub)//2 for sub in row) for row in nonzero_wgs]
+    libfuncall = _lib.ffAlgAnalyticSparseLSolveIdxEx
+    retc = libfuncall(graph, in_nodes, len(in_nodes),
+                      len(non_zero_els), n_vars,
+                      list(len(x) for x in nonzero_cols),
+                      list(_Flattened(nonzero_cols)),
+                      list(_Flattened(n_weights)),
+                      list(_Flattened(nonzero_wgs)),
+                      non_zero_coeffs._ptr,
+                      needed, neededlen)
+    return _Check(retc)
+
+
+def AlgAnalyticDenseLSolve(graph, in_node, n_eqs, n_vars,
+                           coeffs, needed_vars = None):
+    needed = needed_vars
+    if needed is None:
+        needed = _ffi.NULL
+        neededlen = 0
+    else:
+        neededlen = len(needed)
+    retc = _lib.ffAlgAnalyticDenseLSolve(graph, in_node,
+                                         n_eqs, n_vars, coeffs._ptr,
+                                         needed, neededlen)
+    return _Check(retc)
+
+def AlgNumericDenseLSolve(graph, n_eqs, n_vars, coeffs,
+                          needed_vars = None):
+    needed = needed_vars
+    if needed is None:
+        needed = _ffi.NULL
+        neededlen = 0
+    else:
+        neededlen = len(needed)
+    if len(coeffs) != n_eqs * (n_vars+1):
+        raise ValueError("The length of coeffs must be n_eqs * (n_vars+1).")
+    c_coeffs = [_ffi.new("char[]", c.encode('utf8')) for c in coeffs]
+    retc = _lib.ffAlgNumericDenseLSolve(graph, n_eqs, n_vars, c_coeffs,
+                                        needed, neededlen)
+    return _Check(retc)
+
+def AlgNodeDenseLSolve(graph, in_node, n_eqs, n_vars,
+                       needed_vars = None):
+    needed = needed_vars
+    if needed is None:
+        needed = _ffi.NULL
+        neededlen = 0
+    else:
+        neededlen = len(needed)
+    retc = _lib.ffAlgNodeDenseLSolve(graph, in_node, n_eqs, n_vars,
+                                     needed, neededlen)
+    return _Check(retc)
+
+
+def SubgraphRecExponents(graph,node,idx=None):
+    nv = _Check(_lib.ffSubgraphRecNVars(graph,node))
+
+    if idx is None:
+
+        nfuncs = _Check(_lib.ffSubgraphNParsout(graph,node))
+        return list(SubgraphRecExponents(graph,node,i) for i in range(nfuncs))
+
+    else:
+
+        def _poly_exponents(getterms,getexps):
+            nterms = _Check(getterms(graph,node,idx))
+            exps = getexps(graph,node,idx)
+            ret = list(tuple(exps[i*nv: i*nv+nv]) for i in range(nterms))
+            _lib.ffFreeMemoryU16(exps)
+            return ret
+
+        return (_poly_exponents(_lib.ffSubgraphRecNumNTerms,
+                                _lib.ffSubgraphRecNumExponents),
+                _poly_exponents(_lib.ffSubgraphRecDenNTerms,
+                                _lib.ffSubgraphRecDenExponents))
+
+
 def NewRatFunList(nvars, allterms):
     coeffs = []
     exponents = []
@@ -421,48 +892,496 @@ def NewRatFunList(nvars, allterms):
     n_den_terms = []
     for ratfun in allterms:
         if len(ratfun) != 2:
-            raise TypeError("For each rational function, terms should be listed"
-                            + "for both the numerator and the denominator.")
+            raise ValueError("For each rational function, terms should be "
+                             "listed for both the numerator and the "
+                             "denominator.")
         n_num_terms.append(len(ratfun[0]))
         n_den_terms.append(len(ratfun[1]))
         for poly in ratfun:
             for t in poly:
                 coeffs.append(_ffi.new("char[]", t[0].encode('utf8')))
                 if len(t[1]) != nvars:
-                    raise TypeError("The list of exponents the length is not "
-                                    + str(nvars))
+                    raise ValueError("The length of the exponents' list is not "
+                                     + str(nvars))
                 exponents.extend(t[1])
     resc = _lib.ffNewRatFunList(nvars, len(allterms), n_num_terms, n_den_terms,
                                 coeffs, exponents)
     if resc == _ffi.NULL:
-        raise ERROR
+        raise FFlowError()
     res = RatFunList()
     res._ptr = resc
     return res
 
 
+def NewIdxRatFunList(nvars, allterms, indexes = None):
+    if indexes is None:
+        (unique, indexes) = _getUniqueAndIdx(allterms)
+    else:
+        unique = allterms
+    ret0 = NewRatFunList(nvars, unique)
+    return MoveRatFunToIdx(ret0, indexes)
+
+
 def EvaluateRatFunList(rf, z, prime_no):
     if not type(rf) is RatFunList:
-        raise TypeError("First argument of EvaluateRatFunList() must be a RatFunList")
+        raise TypeError("First argument of EvaluateRatFunList() must be "
+                        "a RatFunList")
     if rf._ptr == _ffi.NULL or rf.nvars() != len(z):
-        raise FAILED
+        raise Failed()
     retc = _lib.ffEvaluateRatFunList(rf._ptr, z, prime_no)
     if retc == _ffi.NULL:
-        raise FAILED
+        raise Failed()
     ret = _ffi.unpack(retc, _lib.ffRatFunListSize(rf._ptr))
     _lib.ffFreeMemoryU64(retc)
     return ret
 
 
-def ReconstructFunction(graph, **kwargs):
+def _ReconstructFunction(cfun, graph, **kwargs):
     recopt = _ffi.new("FFRecOptions *",kwargs)
     res = _ffi.new("FFRatFunList **")
-    ret = _to_status[_lib.ffReconstructFunction(graph,recopt[0],res)]
-    if ret is SUCCESS:
+    ret = _to_status[cfun(graph,recopt[0],res)]
+    if ret is Success:
         ret = RatFunList()
         ret._ptr = res[0]
+    else:
+        ret = ret()
     return ret
 
+def ReconstructFunction(graph, **kwargs):
+    '''\
+ReconstructFunction(graph,**kwargs) reconstructs the rational function
+defined by the graph. The allowed keyword arguments kwargs are:
+start_mod, min_primes, max_primes, max_deg, dbginfo, polymethod,
+n_threads.  All of them must have integer values.
+
+    '''
+    return _ReconstructFunction(_lib.ffReconstructFunction,graph,**kwargs)
+
+def ReconstructFunctionMod(graph, **kwargs):
+    '''\
+ReconstructFunctionMod(graph,**kwargs) reconstructs the rational
+function defined by the graph modulo the prime PrimeNo(start_mod),
+with start_mod=0 by default. The allowed keyword arguments kwargs are:
+start_mod, max_deg, dbginfo, polymethod, n_threads.  All of them must
+have integer values.
+
+    '''
+    return _ReconstructFunction(_lib.ffReconstructFunctionMod,graph,**kwargs)
+
+def ParallelReconstructUnivariate(graph, **kwargs):
+    return _ReconstructFunction(_lib.ffParallelReconstructUnivariate,
+                                graph,**kwargs)
+
+def ParallelReconstructUnivariateMod(graph, **kwargs):
+    return _ReconstructFunction(_lib.ffParallelReconstructUnivariateMod,
+                                graph,**kwargs)
+
+def ReconstructFromCurrentEvaluations(graph, **kwargs):
+    return _ReconstructFunction(_lib.ffReconstructFromCurrentEvaluations,
+                                graph,**kwargs)
+
+def ReconstructFromCurrentEvaluationsMod(graph, **kwargs):
+    return _ReconstructFunction(_lib.ffReconstructFromCurrentEvaluationsMod,
+                                graph,**kwargs)
+
+def AllDegrees(graph,**kwargs):
+    recopt = _ffi.new("FFRecOptions *",kwargs)
+    degptr = _lib.ffAllDegrees(graph,recopt[0])
+    if degptr == _ffi.NULL:
+        raise FFlowError()
+    nout = GraphNParsOut(graph)
+    ret = iter(_ffi.unpack(degptr, 2*nout))
+    _lib.ffFreeMemoryU32(degptr)
+    return [(next(ret),next(ret)) for i in range(nout)]
+
+def DumpDegrees(graph,filename):
+    cfile = _ffi.new("char[]", filename.encode('utf8'))
+    return _StatusCheck(_lib.ffDumpDegrees(graph,cfile))
+
+def NParsFromDegreeFile(filename):
+    nparsin = _ffi.new('unsigned[1]')
+    nparsout = _ffi.new('unsigned[1]')
+    cfile = _ffi.new("char[]", filename.encode('utf8'))
+    ret = _StatusCheck(_lib.ffNParsFromDegreeFile(cfile,nparsin,nparsout))
+    return (nparsin[0],nparsout[0])
+
+def LoadDegrees(graph,filename):
+    cfile = _ffi.new("char[]", filename.encode('utf8'))
+    return _StatusCheck(_lib.ffLoadDegrees(graph,cfile))
+
+def _GetDegData(graph,degdata):
+    data = list(el for el in _Flattened(degdata))
+    nparsin = NodeNParsOut(graph,0)
+    nparsout = GraphNParsOut(graph)
+    if len(data) != nparsout*(2 + 4*nparsin):
+        raise ValueError("Unexpected number of elements in degree data")
+    return data
+
+def SetDegrees(graph,degdata):
+    data = _GetDegData(graph,degdata)
+    return _StatusCheck(_lib.ffSetDegrees(graph,data))
+
+def LoadEvaluations(graph,files):
+    cfiles = [_ffi.new("char[]", f.encode('utf8')) for f in files]
+    return _StatusCheck(_lib.ffLoadEvaluations(graph,cfiles,len(files)))
+
+def DumpSamplePoints(graph,filename,**kwargs):
+    recopt = _ffi.new("FFRecOptions *",kwargs)
+    cfile = _ffi.new("char[]", filename.encode('utf8'))
+    return _StatusCheck(_lib.ffDumpSamplePoints(graph,cfile,recopt[0]))
+
+def NSamplePointsInFile(filename):
+    cfile = _ffi.new("char[]", filename.encode('utf8'))
+    return _Check(_lib.ffNSamplePointsInFile(cfile))
+
+def EvaluatePointsInFile(graph,filename,start,n_points,n_threads=0):
+    cfile = _ffi.new("char[]", filename.encode('utf8'))
+    return _StatusCheck(_lib.ffEvaluatePointsInFile(graph,cfile,
+                                                    start,n_points,n_threads))
+
+def DumpEvaluations(graph,filename):
+    cfile = _ffi.new("char[]", filename.encode('utf8'))
+    return _StatusCheck(_lib.ffDumpEvaluations(graph,cfile))
+
+def EvaluatePoints(graph,points,prime_no=0,n_threads=0):
+
+    nparsin = NodeNParsOut(graph,0)
+
+    def append_tuple(x, el):
+        return x + (el,)
+    def append_list(x, el):
+        return x + [el]
+    app_ = {list : append_list, tuple : append_tuple}
+    appto = lambda x : x if len(x) == nparsin+1 else app_[type(x)](x,prime_no)
+
+    full_pts = list(_chain(*map(appto,points)))
+    ret = _lib.ffEvaluatePoints(graph,full_pts,len(points),n_threads)
+    if ret == _ffi.NULL:
+        raise Failed()
+
+    nparsout = GraphNParsOut(graph)
+    res = list(tuple(ret[i:i+nparsout]) for i in range(len(points)))
+    _lib.ffFreeMemoryU64(ret)
+
+    return res
+
+
+def AlgRatExprEval(graph, in_node, functions,
+                   variables=None, variable_prefix=None, n_vars=None):
+    '''AlgRatExprEval(graph, in_node, functions, ...) creates a node
+    which evaluates a list of rational expressions passed as the list
+    of strings `functions`.
+
+    The variables can either be passed as a list of strings using the
+    keyword argument `variables` (note that this is not optimized for
+    long lists) or by a common prefix using the keyword argument
+    `variable_prefix`.
+
+    At least one between `variables` and `variable_prefix` must be
+    specified.  The latter is especially recommended when the list of
+    variables is long and it allows to refer to the variables in the
+    expressions as "`variable_prefix``idx`" where `idx` is their index
+    (zero-based).
+
+    '''
+    if variables is None:
+        if variable_prefix is None:
+            raise ValueError("At least one between variables "
+                             "and variable_prefix must be given as input.")
+        if n_vars is None:
+            raise ValueError("At least one between variables "
+                             "and n_vars must be given as input.")
+    else:
+        if not (n_vars is None) and n_vars != len(variables):
+            raise ValueError("Explicit n_vars != len(variables)")
+        n_vars = len(variables)
+
+    cvars = _ffi.NULL
+    if not variables is None:
+        cvars = [_ffi.new("char[]", x.encode('utf8')) for x in variables]
+    cvarpref = _ffi.NULL
+    if not variable_prefix is None:
+        cvarpref = _ffi.new("char[]", variable_prefix.encode('utf8'))
+    cfuns = [_ffi.new("char[]", f.encode('utf8')) for f in functions]
+    lens = [len(f) for f in functions]
+    return _Check(_lib.ffAlgRatExprEvalEx(graph, in_node,
+                                          cvars, n_vars, cvarpref,
+                                          cfuns, lens, len(functions)))
+
+
+def RatExprToRatFunList(expressions,
+                        variables=None, variable_prefix=None, n_vars=None,
+                        **kwargs):
+    '''Parses a list of rational expressions and reconstructs them as
+    a list of rational functions.
+
+    '''
+    if n_vars is None and not (variables is None):
+        n_vars = len(variables)
+    with GraphContextWithInput(n_vars) as (g,inp):
+        node = AlgRatExprEval(g,inp, expressions,
+                              variables=variables,
+                              variable_prefix=variable_prefix,
+                              n_vars=n_vars)
+        SetOutputNode(g,node)
+        rec = ReconstructFunction(g,**kwargs)
+        if type(rec) is RatFunList:
+            return rec
+        else:
+            raise rec
+
+
+def ReconstructNumeric(graph, **kwargs):
+    nparsout = GraphNParsOut(graph)
+    recopt = _ffi.new("FFRecOptions *",kwargs)
+    retc = _lib.ffReconstructNumeric(graph,recopt[0])
+    if retc == _ffi.NULL:
+        raise Failed()
+    ret = list(_ffi.string(retc[i]).decode() for i in range(nparsout))
+    _lib.ffFreeCStrArray(retc)
+    return ret
+
+def ChineseRemainder(z1, mod1, z2, mod2):
+    length = len(z1)
+
+    if length != len(z2):
+        raise ValueError("Inputs z1 and z2 must have the same length");
+
+    z1c = list(_ffi.new("char[]", str(zz).encode('utf8')) for zz in z1)
+    mod1c = str(mod1).encode('utf8')
+
+    retc = _lib.ffChineseRemainder(z1c,mod1c,z2,mod2,length)
+    if retc == _ffi.NULL:
+        raise Failed()
+    ret = list(_ffi.string(retc[i]).decode() for i in range(length))
+    mod = _ffi.string(retc[length]).decode()
+    _lib.ffFreeCStrArray(retc)
+
+    return (ret,mod)
+
+def _RatRec(cfun, z, mod):
+    length = len(z)
+    zc = list(_ffi.new("char[]", str(zz).encode('utf8')) for zz in z)
+    modc = str(mod).encode('utf8')
+
+    retc = cfun(zc,modc,length)
+    if retc == _ffi.NULL:
+        raise Failed()
+    ret = list(_ffi.string(retc[i]).decode() for i in range(length))
+    _lib.ffFreeCStrArray(retc)
+
+    return ret
+
+def RatRec(z, mod):
+    return _RatRec(_lib.ffRatRec, z, mod)
+
+def ParallelRatRec(z, mod, nthreads=0):
+    def cfun(zz,mmod,llen):
+        return _lib.ffParallelRatRec(zz,mmod,llen,nthreads)
+    return _RatRec(cfun, z, mod)
+
+
+def ReconstructFunctionWithDegrees(graph, degdata, **kwargs):
+    degs = _GetDegData(graph,degdata)
+    def cfun(g,opt,res):
+        return _lib.ffReconstructFunctionWithDegrees(g,opt,degs,res)
+    return _ReconstructFunction(cfun,graph,**kwargs)
+
+def ReconstructFunctionWithDegreesMod(graph, degdata, **kwargs):
+    degs = _GetDegData(graph,degdata)
+    def cfun(g,opt,res):
+        return _lib.ffReconstructFunctionWithDegreesMod(g,opt,degs,res)
+    return _ReconstructFunction(cfun,graph,**kwargs)
+
+
+def AllGraphs():
+    n_graphs = _ffi.new('unsigned[1]')
+    graphs = _lib.ffAllGraphs(n_graphs)
+    if graphs == _ffi.NULL:
+        raise Failed()
+    return _ffi.unpack(graphs, n_graphs[0])
+
+def GraphNodes(graph,pruned=False):
+    n_nodes = _ffi.new('unsigned[1]')
+    nodes = _lib.ffGraphNodes(graph,pruned,n_nodes)
+    if nodes == _ffi.NULL:
+        raise Failed()
+    return _ffi.unpack(nodes, n_nodes[0])
+
+def GraphEdges(graph,pruned=False):
+    n_edges = _ffi.new('unsigned[1]')
+    edges = _lib.ffGraphEdges(graph,pruned,n_edges)
+    if edges == _ffi.NULL:
+        raise Failed()
+    edges = iter(_ffi.unpack(edges, n_edges[0]*2))
+    return [(next(edges),next(edges)) for i in range(n_edges[0])]
+
+
+def U32ListToJSON(filename, uint_list):
+    '''Serialize a list of unsigned ints to JSON as: `[len, [list...]]`'''
+    return _StatusCheck(_lib.ffU32ListToJSON(filename.encode('utf8'),
+                                             uint_list, len(uint_list)))
+
+def U32ListFromJSON(filename):
+    '''The input file must be compatible with the format created by U32ListToJSON().'''
+    list_len = _ffi.new('size_t[1]')
+    retc =  _lib.ffU32ListFromJSON(filename.encode('utf8'), list_len)
+    if retc == _ffi.NULL:
+        raise FFlowError()
+    res = _ffi.unpack(retc, list_len[0])
+    _lib.ffFreeMemoryU32(retc)
+    return res
+
+def SparseEqsToJSON(filename, non_zero_els, non_zero_coeffs):
+    '''Serialize a set of equations.'''
+    if sum(len(x) for x in non_zero_els) != len(non_zero_coeffs):
+        raise ValueError("Inconsistent row data.")
+    retc = _lib.ffSparseEqsIdxToJSON(filename.encode('utf8'),
+                                     len(non_zero_els),
+                                     [len(x) for x in non_zero_els],
+                                     [x for x in _chain(*non_zero_els)],
+                                     non_zero_coeffs._ptr)
+    return _StatusCheck(retc)
+
+def SparseSystemToJSON(filename, n_eqs, n_vars, n_params,
+                       needed_vars, eq_json_files):
+    '''Generate the input JSON file for AlgJSONSparseLSolve()'''
+    cfiles = [_ffi.new("char[]", x.encode('utf8')) for x in eq_json_files]
+    retc = _lib.ffSparseSystemToJSON(filename.encode('utf8'),
+                                     n_eqs, n_vars, n_params,
+                                     needed_vars, len(needed_vars),
+                                     cfiles, len(eq_json_files))
+    return _StatusCheck(retc)
+
+
+
+# The following functions are additional utilities implemented using
+# in the Python API, which are not part of the C API (yet).
+
+
+def RatMod(rationals, prime_no):
+    with GraphContext() as g:
+        neval = AlgRatNumEval(g,rationals)
+        SetOutputNode(g,neval)
+        return EvaluateGraph(g, [], prime_no)
+
+
+def ParallelReconstructDegreeData(graph,**kwargs):
+    '''Reconstruct degree data parallelizing univariate
+    reconstructions.
+
+    The output can be used as an argument of
+    ReconstructFunctionWithDegrees, ReconstructFunctionWithDegreesMod
+    and SetDegrees.
+
+    '''
+
+    pmin = PrimeNo(NAvailablePrimes()-1)
+    rand = lambda : _randint(123456789123456789, pmin-1)
+
+    nparsin = NodeNParsOut(graph,0)
+    nparsout = GraphNParsOut(graph)
+
+    zerolist = list(0 for _ in range(2 + 4*nparsin))
+    degdata = list(list(zerolist) for _ in range(nparsout))
+
+    linfuns = list(
+        ([(str(rand()), (0,)), (str(rand()), (1,))],[('1', (0,))]) \
+        for _ in range(nparsin)
+    )
+    constfuns = list(
+        ([(str(rand()), (0,))],[('1', (0,))]) for _ in range(nparsin)
+    )
+
+    # total degrees
+    with GraphContextWithInput(1) as (g,inp):
+        lin = AlgRatFunEval(g,inp,NewRatFunList(1,linfuns))
+        sub = AlgSimpleSubgraph(g,[lin],graph)
+        SetOutputNode(g,sub)
+        res = ParallelReconstructUnivariateMod(g,**kwargs)
+        if not type(res) is RatFunList:
+            return res
+        for j in range(nparsout):
+            numexp = res.num_exponents(j)
+            if len(numexp) == 0:
+                continue
+            degdata[j][0] = numexp[0][0]
+            degdata[j][1] = res.den_exponents(j)[0][0]
+
+    # partial degrees
+    for i in range(nparsin):
+        with GraphContextWithInput(1) as (g,inp):
+            funs = list(constfuns)
+            funs[i] = ([('1', (1,))],[('1', (0,))])
+            lin = AlgRatFunEval(g,inp,NewRatFunList(1,funs))
+            sub = AlgSimpleSubgraph(g,[lin],graph)
+            SetOutputNode(g,sub)
+            res = ParallelReconstructUnivariateMod(g,**kwargs)
+            if not type(res) is RatFunList:
+                return res
+            for j in range(nparsout):
+                numexp = res.num_exponents(j)
+                if len(numexp) == 0:
+                    continue
+                denexp = res.den_exponents(j)
+                degdata[j][2 + 4*i] = numexp[0][0]
+                degdata[j][2 + 4*i + 1] = numexp[-1][0]
+                degdata[j][2 + 4*i + 2] = denexp[0][0]
+                degdata[j][2 + 4*i + 3] = denexp[-1][0]
+
+    return degdata
+
+
+def TakeUnique(graph, nodein, nevals=3):
+    '''\
+TakeUnique(graph, nodein, nevals=3) returns a tuple
+
+    (newnode, fromouts)
+
+where `newnode` is the integer id of a newly created node which takes
+`nodein` as input and returns the subset of its unique elements.
+These are identified via numerical evaluations (their number can be
+changed with the optional argument `nevals`).  The list `fromouts` is
+such that
+```
+    input == list(output[i] for i in fromouts)
+```
+where input/output is the input/output of the new node.
+
+    '''
+    SetOutputNode(graph, nodein)
+    nout = GraphNParsOut(graph)
+    nin = NodeNParsOut(graph,0)
+    pmin = PrimeNo(NAvailablePrimes()-1)
+    rand = lambda : _randint(123456789123456789, pmin-1)
+    evals = list(EvaluateGraph(graph, list(rand() for _ in range(nin)), 0)
+                 for _ in range(nevals))
+    evals = list(map(tuple, zip(*evals))) # transpose
+    asso = dict()
+    outn = 0
+    outs = []
+    fromouts = []
+    for ii in range(nout):
+        evii = evals[ii]
+        if not evii in asso:
+            asso[evii] = outn
+            outs.append(ii)
+            fromouts.append(outn)
+            outn += 1
+        else:
+            fromouts.append(asso[evii])
+    newnode = AlgTake(graph, [nodein], list((0,jj) for jj in outs))
+    return (newnode, fromouts)
+
+def PositionsInList(shorter_list, longer_list):
+    '''PositionsInList(shorter_list, longer_list) returns the
+    positions of the elements of shorter_list into longer_list.
+    Complexity is O(len(shorter_list)+len(longer_list)).
+    '''
+    pos = dict()
+    for idx,el in enumerate(longer_list):
+        pos[el] = idx
+    return [pos[el] for el in shorter_list]
 
 if __name__ == '__main__':
     pass

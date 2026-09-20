@@ -37,8 +37,11 @@ namespace fflow {
   {
     for (unsigned i=0; i<needed_size; ++i)
       if (needed_vars[i] >= nvars() ||
-          !(xinfo_[needed_vars[i]] & flag_t(LSVar::IS_NEEDED)))
+          !(xinfo_[needed_vars[i]] & flag_t(LSVar::IS_NEEDED))) {
+        logerr("New set of needed variables is not a subset of "
+               "the previous one");
         return FAILED;
+      }
 
     nneeded_ext_ = needed_size;
     needed_ext_.reset(new std::size_t[needed_size]);
@@ -69,6 +72,7 @@ namespace fflow {
   void DenseLinearSolver::get_dependent_variables_(AlgorithmData * data,
                                                    MatrixView & mv)
   {
+    indepv_.clear();
     mv.dependent_vars(adata_(data).depv_);
     for (auto dep : adata_(data).depv_)
       xinfo_[dep] |= LSVar::IS_DEP;
@@ -115,6 +119,9 @@ namespace fflow {
   // check_dependent_variables_
   void DenseLinearSolver::learn_zeroes_(AlgorithmData * data, MatrixView & mv)
   {
+    if (only_non_homog_)
+      return learn_zeroes_onlynonhomog_(data, mv);
+
     unsigned eq = 0;
     zero_vars_ = 0;
 
@@ -134,6 +141,32 @@ namespace fflow {
 
       ++eq;
     }
+  }
+
+  void DenseLinearSolver::learn_zeroes_onlynonhomog_(AlgorithmData * data,
+                                                     MatrixView & mv)
+  {
+    unsigned eq = 0;
+    zero_vars_ = 0;
+
+    for (auto dep : adata_(data).depv_) {
+
+      bool non_zero = mv(eq,nvars()) != 0;
+
+      if (!non_zero) {
+        xinfo_[dep] &= ~flag_t(LSVar::IS_NON_ZERO);
+        ++zero_vars_;
+      }
+
+      ++eq;
+    }
+
+    for (auto indep : indepv_) {
+      xinfo_[indep] |= LSVar::IS_DEP;
+      xinfo_[indep] &= ~flag_t(LSVar::IS_NON_ZERO);
+    }
+    zero_vars_ += indepv_.size();
+    indepv_.clear();
   }
 
   // must be called after get_dependent_variables_ or
@@ -191,6 +224,7 @@ namespace fflow {
 
     mv.toReducedRowEcholon(mod);
     if (mv.isImpossibleSystem()) {
+      impossible_ = true;
       stage_ = SECOND_;
       return SUCCESS;
     }
@@ -228,7 +262,7 @@ namespace fflow {
     mv.toReducedRowEcholon(mod);
 
     if (mv.isImpossibleSystem()) {
-      if (is_learning_impossible_(data))
+      if (is_learning_impossible_())
         return SUCCESS;
       invalidate();
       return FAILED;
@@ -298,6 +332,14 @@ namespace fflow {
     return SUCCESS;
   }
 
+  Ret DenseLinearSolver::only_non_homogeneous(bool flag)
+  {
+    if (!is_mutable())
+      return FAILED;
+    invalidate();
+    only_non_homog_ = flag;
+    return SUCCESS;
+  }
 
 
   // Sparse
@@ -308,7 +350,6 @@ namespace fflow {
     const auto & data = *static_cast<const SparseLinearSolverData*>(datain);
     auto & oth = *static_cast<SparseLinearSolverData*>(dataout);
     oth.mat_.resize(data.mat_.nrows(), data.mat_.ncolumns());
-    oth.depv_ = data.depv_;
   }
 
   Ret SparseLinearSolver::dump_info(const AlgorithmData * datain,
@@ -330,36 +371,60 @@ namespace fflow {
         file.write(reinterpret_cast<char*>(&z), sizeof(flag_t));
       };
 
+    dump_int32(neqs_);
+    dump_int32(nvars_);
     dump_int32(data.mat_.nrows());
     dump_int32(data.mat_.ncolumns());
-    dump_int32(data.depv_.size());
-    for (auto v : data.depv_)
-      dump_int32(v);
-    dump_int32(indepv_.size());
-    for (auto v : indepv_)
-      dump_int32(v);
-    dump_int32(nneeded_ext_);
     dump_int32(nndeps_);
     dump_int32(nnindeps_);
     dump_int32(nnindepeqs_);
     dump_int32(nparsin[0]);
     dump_int32(nparsout);
+    dump_int32(maxcol_);
+    dump_int32(zerodeps_.size());
 
 #define dump_uptr(field, size)              \
     for (unsigned j=0; j<size; ++j)         \
       dump_int32(field[j]);
 
-    dump_uptr(needed_ext_, nneeded_ext_);
     dump_uptr(needed_dep_, nndeps_);
     dump_uptr(needed_indep_, nnindeps_);
     dump_uptr(indepeqs_, nnindepeqs_);
-
-#undef dump_uptr
+    dump_uptr(outeq_pos_, nndeps_-zerodeps_.size());
+    dump_uptr(zerodeps_, zerodeps_.size());
 
     for (unsigned j=0; j<nvars()+1; ++j)
       dump_flag(xinfo_[j]);
 
     dump_flag(stage_);
+    dump_flag(flag_);
+
+    // sparse-output data
+    if (!output_is_sparse()) {
+
+      dump_flag(0);
+
+    }  else {
+
+      dump_flag(1);
+      const auto & spoutd = *sparseout_data_.get();
+      dump_int32(spoutd.size());
+      for (const auto & eqdata : spoutd) {
+        dump_int32(eqdata.size());
+        dump_uptr(eqdata.data(), eqdata.size());
+      }
+
+    }
+
+    // eq. dependencies
+    dump_int32(eqdeps_.size());
+    for (const auto & eqdep : eqdeps_) {
+      dump_int32(eqdep.size());
+      dump_uptr(eqdep, eqdep.size());
+    }
+
+
+#undef dump_uptr
 
     return SUCCESS;
   }
@@ -400,48 +465,76 @@ namespace fflow {
         return FAILED;  \
     } while (0)
 
+    LOAD_INT32(neqs_);
+    LOAD_INT32(nvars_);
     unsigned nr, nc;
     LOAD_INT32(nr);
     LOAD_INT32(nc);
     data.mat_.resize(nr, nc);
-    unsigned depsize, indepsize;
-    LOAD_INT32(depsize);
-    data.depv_.resize(depsize);
-    for (auto & v : data.depv_)
-      LOAD_INT32(v);
-    LOAD_INT32(indepsize);
-    indepv_.resize(indepsize);
-    for (auto & v : indepv_)
-      LOAD_INT32(v);
-    LOAD_INT32(nneeded_ext_);
-    needed_ext_.reset(new std::size_t[nneeded_ext_]);
+    //
     LOAD_INT32(nndeps_);
-    needed_dep_.reset(new std::size_t[nndeps_]);
+    needed_dep_.reset(new unsigned[nndeps_]);
     LOAD_INT32(nnindeps_);
-    needed_indep_.reset(new std::size_t[nnindeps_]);
+    needed_indep_.reset(new unsigned[nnindeps_]);
     LOAD_INT32(nnindepeqs_);
-    indepeqs_.reset(new std::size_t[nnindepeqs_]);
+    indepeqs_.reset(new unsigned[nnindepeqs_]);
     nparsin.resize(1);
     LOAD_INT32(nparsin[0]);
     LOAD_INT32(nparsout);
+    LOAD_INT32(maxcol_);
+    unsigned zerod_size;
+    LOAD_INT32(zerod_size);
+    zerodeps_.resize(zerod_size);
+    outeq_pos_.reset(new unsigned[nndeps_-zerod_size]);
 
 #define load_uptr(field, size)              \
     for (unsigned j=0; j<size; ++j)         \
       LOAD_INT32(field[j]);
 
-    load_uptr(needed_ext_, nneeded_ext_);
     load_uptr(needed_dep_, nndeps_);
     load_uptr(needed_indep_, nnindeps_);
     load_uptr(indepeqs_, nnindepeqs_);
-
-#undef load_uptr
+    load_uptr(outeq_pos_, nndeps_-zerod_size);
+    load_uptr(zerodeps_, zerod_size);
 
     xinfo_.reset(new flag_t[nvars()+1]);
     for (unsigned j=0; j<nvars()+1; ++j)
       LOAD_FLAG(xinfo_[j]);
 
     LOAD_FLAG(stage_);
+    LOAD_FLAG(flag_);
 
+    // sparse-output data
+    flag_t is_sparse;
+    LOAD_FLAG(is_sparse);
+    if (is_sparse) {
+
+      sparseout_data_.reset(new std::vector<std::vector<unsigned>>());
+      auto & spoutd = *sparseout_data_.get();
+      unsigned spoutd_size;
+      LOAD_INT32(spoutd_size);
+      spoutd.resize(spoutd_size);
+      for (unsigned j=0; j<spoutd_size; ++j) {
+        unsigned eqdata_size;
+        LOAD_INT32(eqdata_size);
+        spoutd[j].resize(eqdata_size);
+        load_uptr(spoutd[j], eqdata_size);
+      }
+
+    }
+
+    // eq. dependencies
+    unsigned eqdep_size;
+    LOAD_INT32(eqdep_size);
+    eqdeps_.resize(eqdep_size);
+    for (unsigned j=0; j<eqdep_size; ++j) {
+      unsigned thiseqdep_size;
+      LOAD_INT32(thiseqdep_size);
+      eqdeps_[j].resize(thiseqdep_size);
+      load_uptr(eqdeps_[j], thiseqdep_size);
+    }
+
+#undef load_uptr
 #undef LOAD_INT32
 #undef LOAD_FLAG
 
@@ -451,57 +544,106 @@ namespace fflow {
 
   Ret SparseLinearSolver::reset(AlgorithmData * data)
   {
-    const unsigned nv = nvars();
-
-    adata_(data).depv_.clear();
-    indepv_.clear();
-
-    std::fill(xinfo_.get(), xinfo_.get()+nvars()+1, LSVar::IS_NON_ZERO);
-    for (unsigned i=0; i<nneeded_ext_; ++i) {
-      if (needed_ext_[i] >= nv+1 || xinfo_[needed_ext_[i]] & LSVar::IS_NEEDED)
-        return FAILED;
-      xinfo_[needed_ext_[i]] |= LSVar::IS_NEEDED;
-    }
-
     nnindepeqs_ = adata_(data).mat_.nrows();
     for (unsigned i=0; i<nnindepeqs_; ++i)
       indepeqs_[i] = i;
 
+    zerodeps_.clear();
+
     return SUCCESS;
+  }
+
+  void SparseLinearSolver::set_ext_needed_(const unsigned * needed_vars,
+                                           unsigned needed_size)
+  {
+    std::fill(xinfo_.get(), xinfo_.get()+nvars()+1, LSVar::IS_NON_ZERO);
+    for (unsigned j=0; j<needed_size; ++j)
+      xinfo_[needed_vars[j]] |= LSVar::IS_NEEDED;
+  }
+
+  void SparseLinearSolver::get_needed_indep_()
+  {
+    nnindeps_ = 0;
+    for (unsigned j=0; j<nvars(); ++j)
+      if ((xinfo_[j] & LSVar::IS_NEEDED_ANY) && !(xinfo_[j] & LSVar::IS_DEP))
+        ++nnindeps_;
+
+    unsigned nic=0;
+    needed_indep_.reset(new unsigned[nnindeps_]);
+    for (unsigned j=0; j<nvars(); ++j)
+      if (xinfo_[j] & LSVar::IS_NEEDED_ANY && !(xinfo_[j] & LSVar::IS_DEP))
+        needed_indep_[nic++] = j;
+  }
+
+  void SparseLinearSolver::relearn_needed_(AlgorithmData * data)
+  {
+    const unsigned old_nz = zerodeps_.size();
+
+    relearn_zero_needed_();
+    std::copy(zerodeps_.begin(), zerodeps_.end(), needed_dep_.get());
+
+    const unsigned nz = zerodeps_.size();
+    const auto & mat = mat_(data);
+    unsigned ieq=0;
+    for (unsigned j=old_nz; j<nndeps_; ++j) {
+      const unsigned eqpos = outeq_pos_[j-old_nz];
+      const auto & row = mat.row(eqpos);
+      const unsigned depv = row.first_nonzero_column();
+      if (xinfo_[depv] & LSVar::IS_NEEDED) {
+        const unsigned rsize = row.size();
+        for (unsigned k=1; k<rsize; ++k)
+          xinfo_[row.el(k).col] |= LSVar::IS_NEEDED_RHS;
+        outeq_pos_[ieq] = eqpos;
+        needed_dep_[ieq+nz] = depv;
+        ++ieq;
+      }
+    }
+    nndeps_ = nz+ieq;
+
+    if (!output_is_sparse())
+      get_needed_indep_();
+  }
+
+  void SparseLinearSolver::optimize_nonneeded_indeps_()
+  {
+    // Optimization: remove non-needed independent variables
+    for (unsigned j=0; j<nvars_; ++j)
+      if (!(xinfo_[j] & LSVar::IS_DEP) && !(xinfo_[j] & LSVar::IS_NEEDED_ANY))
+        xinfo_[j] &= ~flag_t(LSVar::IS_NON_ZERO);
   }
 
   Ret SparseLinearSolver::reset_needed(AlgorithmData * data,
                                        const unsigned * needed_vars,
                                        unsigned needed_size)
   {
+    if (!is_mutable())
+      return MUTABILITY_ERROR;
+
     const unsigned nv = nvars();
+    const flag_t was_needed = has_max_col_() ? LSVar::IS_NEEDED :
+      LSVar::IS_NEEDED_ANY;
 
     for (unsigned i=0; i<needed_size; ++i)
-      if (needed_vars[i] >= nv ||
-          !(xinfo_[needed_vars[i]] & flag_t(LSVar::IS_NEEDED)))
+      if (needed_vars[i] >= nv || !(xinfo_[needed_vars[i]] & was_needed)) {
+        logerr("New set of needed variables is not a subset of "
+               "the previous one");
         return FAILED;
+      }
 
     eqdeps_.clear();
 
-    nneeded_ext_ = needed_size;
-    needed_ext_.reset(new std::size_t[needed_size]);
-    for (unsigned i=0; i<needed_size; ++i)
-      needed_ext_[i] = needed_vars[i];
-
     for (unsigned i=0; i<nv; ++i)
-      xinfo_[i] &= ~flag_t(LSVar::IS_NEEDED);
-    for (unsigned i=0; i<nneeded_ext_; ++i) {
-      if (xinfo_[needed_ext_[i]] & LSVar::IS_NEEDED)
-        return FAILED;
-      xinfo_[needed_ext_[i]] |= LSVar::IS_NEEDED;
-    }
+      xinfo_[i] &= ~flag_t(LSVar::IS_NEEDED_ANY);
+    for (unsigned i=0; i<needed_size; ++i)
+      xinfo_[needed_vars[i]] |= LSVar::IS_NEEDED;
 
     if (stage_ >= SECOND_) {
-      learn_needed_(data);
+      relearn_needed_(data);
+      optimize_nonneeded_indeps_();
       if (output_is_sparse())
         set_sparseout_data_(data);
       else
-        nparsout = nndeps_ * (nnindeps_ + unsigned(!homog_));
+        nparsout = nndeps_ * (nnindeps_ + unsigned(!(flag_ & HOMOG_)));
     }
 
     return SUCCESS;
@@ -513,78 +655,135 @@ namespace fflow {
       adata_(data).mat_.row(i).id() = i;
   }
 
-  void SparseLinearSolver::get_dependent_variables_(AlgorithmData * data)
-  {
-    adata_(data).mat_.dependent_vars(adata_(data).depv_);
-    for (auto dep : adata_(data).depv_)
-      xinfo_[dep] |= LSVar::IS_DEP;
-    for (unsigned i=0; i<nvars(); ++i)
-      if (!(xinfo_[i] & LSVar::IS_DEP))
-        indepv_.push_back(i);
-  }
-
   Ret SparseLinearSolver::check_dependent_variables_(AlgorithmData * data) const
   {
-    std::size_t ndeps = adata_(data).depv_.size();
-    adata_(data).mat_.dependent_vars(adata_(data).depv_);
-    if (ndeps != adata_(data).depv_.size()) {
-      adata_(data).depv_.resize(ndeps);
-      return FAILED;
-    }
-    for (auto dep : adata_(data).depv_)
-      if (!(xinfo_[dep] & LSVar::IS_DEP) || (xinfo_[dep] & LSVar::IS_SWEEPED))
+    const auto & mat = adata_(data).mat_;
+    const unsigned neqs = mat.nrows();
+
+    unsigned check_nneeded_deps = zerodeps_.size();
+
+    for (unsigned j=0; j<neqs; ++j) {
+
+      auto & row = mat.row(j);
+      const unsigned col = row.first_nonzero_column();
+
+      if (col == SparseMatrixRow::END)
+        break;
+
+      if (!(xinfo_[col] & LSVar::IS_DEP) || (xinfo_[col] & LSVar::IS_SWEEPED))
         return FAILED;
+
+      if (xinfo_[col] & LSVar::IS_NEEDED) {
+        ++check_nneeded_deps;
+
+        if (row.size() != 1) {
+          if (!(xinfo_[col] & LSVar::IS_NON_ZERO))
+            return FAILED;
+        } else if (zerovars_opt_()) {
+          if ((xinfo_[col] & LSVar::IS_NON_ZERO))
+            return FAILED;
+        }
+
+      }
+    }
+
+    if (check_nneeded_deps != nndeps_)
+      return FAILED;
+
     return SUCCESS;
   }
 
-  // must be called after get_dependent_variables_ or
-  // check_dependent_variables_
-  void SparseLinearSolver::get_independent_eqs_(AlgorithmData * data)
+  void SparseLinearSolver::relearn_zero_needed_()
   {
-    nnindepeqs_ = adata_(data).depv_.size();
-    for (unsigned eq = 0; eq<nnindepeqs_; ++eq)
-      indepeqs_[eq] = adata_(data).mat_.row(eq).id();
+    unsigned nz = std::remove_if(zerodeps_.begin(),
+                                 zerodeps_.end(),
+                                 [&](unsigned col)
+                                 {
+                                   return !(xinfo_[col] & LSVar::IS_NEEDED);
+                                 }) - zerodeps_.begin();
+    zerodeps_.resize(nz);
   }
 
-  // must be called after get_dependent_variables_ or
-  // check_dependent_variables_, on a reduced system
-  void SparseLinearSolver::learn_needed_(AlgorithmData * data)
+  bool SparseLinearSolver::check_zeroes_(AlgorithmData * data)
   {
-    unsigned eq = 0;
-    nndeps_ = 0;
-    for (auto dep : adata_(data).depv_) {
-      if (xinfo_[dep] & LSVar::IS_NEEDED) {
+    if (!zerovars_opt_())
+      return false;
 
-        if (!output_is_sparse()) {
-          for (unsigned j=dep+1; j<nvars(); ++j)
-            if (adata_(data).mat_(eq,j))
-              xinfo_[j] |= LSVar::IS_NEEDED;
+    if (flag_ & ONLY_NON_HOMOG_)
+      return check_zeroes_onlynonhomog_(data);
+
+    const auto & mat = adata_(data).mat_;
+    const unsigned neqs = mat.nrows();
+    bool any_zero = false;
+
+    if (!zerodeps_.size()) {
+
+      for (unsigned j=0; j<neqs; ++j) {
+
+        auto & row = mat.row(j);
+        const unsigned col = row.first_nonzero_column();
+
+        if (col == SparseMatrixRow::END)
+          break;
+
+        if (row.size() == 1) {
+          any_zero = true;
+          xinfo_[col] |= LSVar::IS_DEP;
+          xinfo_[col] &= ~flag_t(LSVar::IS_NON_ZERO);
+          if (xinfo_[col] & LSVar::IS_NEEDED)
+            zerodeps_.push_back(col);
         }
-        ++nndeps_;
 
       }
-      ++eq;
+
     }
 
-    if (!output_is_sparse()) {
-      nnindeps_ = 0;
+    return any_zero;
+  }
+
+  bool SparseLinearSolver::check_zeroes_onlynonhomog_(AlgorithmData * data)
+  {
+    const auto & mat = adata_(data).mat_;
+    const unsigned neqs = mat.nrows();
+    bool any_zero = false;
+
+    if (!zerodeps_.size()) {
+
+      for (unsigned j=0; j<neqs; ++j) {
+
+        auto & row = mat.row(j);
+        const unsigned col = row.first_nonzero_column();
+
+        if (col == SparseMatrixRow::END)
+          break;
+
+        xinfo_[col] |= LSVar::IS_DEP;
+
+        bool non_zero = false;
+        const unsigned rsize = row.size();
+        if (row.el(rsize-1).col == nvars())
+          non_zero = true;
+
+        if (!non_zero) {
+          any_zero = true;
+          xinfo_[col] &= ~flag_t(LSVar::IS_NON_ZERO);
+          if (xinfo_[col] & LSVar::IS_NEEDED)
+            zerodeps_.push_back(col);
+        }
+
+      }
+
       for (unsigned j=0; j<nvars(); ++j)
-        if ((xinfo_[j] & LSVar::IS_NEEDED) && !(xinfo_[j] & LSVar::IS_DEP))
-          ++nnindeps_;
+        if (!(xinfo_[j] & LSVar::IS_DEP)) {
+          any_zero = true;
+          xinfo_[j] |= LSVar::IS_DEP;
+          xinfo_[j] &= ~flag_t(LSVar::IS_NON_ZERO);
+          if (xinfo_[j] & LSVar::IS_NEEDED)
+            zerodeps_.push_back(j);
+        }
     }
 
-    needed_dep_.reset(new std::size_t[nndeps_]);
-    if (!output_is_sparse())
-      needed_indep_.reset(new std::size_t[nnindeps_]);
-    unsigned ndc=0, nic=0;
-    if (!output_is_sparse()) {
-      for (unsigned j=0; j<nvars(); ++j)
-        if (xinfo_[j] & LSVar::IS_NEEDED && !(xinfo_[j] & LSVar::IS_DEP))
-          needed_indep_[nic++] = j;
-    }
-    for (auto dep : adata_(data).depv_)
-      if (xinfo_[dep] & LSVar::IS_NEEDED)
-        needed_dep_[ndc++] = dep;
+    return any_zero;
   }
 
   Ret SparseLinearSolver::learn_1_(Context * ctxt, AlgInput xin[], Mod mod,
@@ -598,22 +797,91 @@ namespace fflow {
       return FAILED;
 
     number_eqs_(data);
-    mat_(data).sortRows();
+    mat_(data).sortRows(eq_weight_.get());
 
-    if (!has_max_row_())
-      mat_(data).toReducedRowEcholon(mod);
-    else
-      mat_(data).toReducedRowEcholonWithMaxRow(mod, maxrow_, backsubst_);
+    mat_(data).toReducedRowEcholon(mod, maxcol_, !(flag_ & NO_BACKSUBST_),
+                                   !(flag_ & KEEP_ALL_OUTS_));
 
     if (mat_(data).isImpossibleSystem()) {
+      flag_ |= IMPOSSIBLE_;
       stage_ = SECOND_;
       return SUCCESS;
     }
 
-    get_dependent_variables_(data);
-    get_independent_eqs_(data);
-    learn_needed_(data);
-    mat_(data).restrict_rows(nnindepeqs_);
+    // Deal with zeroes first
+    bool any_zero = check_zeroes_(data);
+    if (any_zero) {
+      Ret ret = fill_matrix(ctxt, nnindepeqs_, indepeqs_.get(),
+                            xin, mod, data, mat_(data));
+      if (ret == FAILED)
+        return FAILED;
+      number_eqs_(data);
+      mat_(data).sortRows(eq_weight_.get());
+      mat_(data).toReducedRowEcholon(mod, maxcol_, !(flag_ & NO_BACKSUBST_),
+                                     !(flag_ & KEEP_ALL_OUTS_));;
+    }
+
+    // Filter equations
+    nnindepeqs_ = adata_(data).mat_.removeZeroDeps(zerovars_opt_());
+
+    // get dependent variables and needed
+    {
+      const auto & mat = adata_(data).mat_;
+      const unsigned neqs = mat.nrows();
+      nndeps_ = zerodeps_.size();
+
+      for (unsigned j=0; j<neqs; ++j) {
+
+        auto & row = mat.row(j);
+        const unsigned col = row.first_nonzero_column();
+
+        if (col == SparseMatrixRow::END)
+          break;
+
+        xinfo_[col] |= LSVar::IS_DEP;
+
+        if (xinfo_[col] & LSVar::IS_NEEDED) {
+
+          const unsigned rsize = row.size();
+          for (unsigned k=1; k<rsize; ++k)
+            xinfo_[row.el(k).col] |= LSVar::IS_NEEDED_RHS;
+
+          ++nndeps_;
+        }
+
+      }
+
+      if (!output_is_sparse())
+        get_needed_indep_();
+
+      outeq_pos_.reset(new unsigned[nndeps_ - zerodeps_.size()]);
+      needed_dep_.reset(new unsigned[nndeps_]);
+      std::copy(zerodeps_.begin(), zerodeps_.end(), needed_dep_.get());
+      unsigned ceqpos = 0;
+      unsigned ndc = zerodeps_.size();
+      for (unsigned j=0; j<neqs; ++j) {
+
+        auto & row = mat.row(j);
+        const unsigned col = row.first_nonzero_column();
+
+        if (col == SparseMatrixRow::END)
+          break;
+
+        if (xinfo_[col] & LSVar::IS_NEEDED) {
+          needed_dep_[ndc++] = row.first_nonzero_column();
+          outeq_pos_[ceqpos++] = j;
+        }
+      }
+    }
+
+    // get independent eqs
+    {
+      const auto & mat = adata_(data).mat_;
+      for (unsigned eq = 0; eq<nnindepeqs_; ++eq)
+        indepeqs_[eq] = mat.row(eq).id();
+    }
+
+    optimize_nonneeded_indeps_();
 
     stage_ = SECOND_;
 
@@ -628,15 +896,15 @@ namespace fflow {
     if (ret == FAILED)
       return FAILED;
 
+    eqdeps_.clear();
     eqdeps_.resize(nnindepeqs_);
-    if (!has_max_row_())
-      mat_(data).toReducedRowEcholon(mod, xinfo_.get(), eqdeps_.data());
-    else
-      mat_(data).toReducedRowEcholonWithMaxRow(mod, maxrow_, backsubst_,
-                                               xinfo_.get(), eqdeps_.data());
+    mat_(data).toReducedRowEcholon(mod, maxcol_, !(flag_ & NO_BACKSUBST_),
+                                   !(flag_ & KEEP_ALL_OUTS_),
+                                   xinfo_.get(), eqdeps_.data());
 
     if (mat_(data).isImpossibleSystem()) {
-      if (is_learning_impossible_(data))
+      eqdeps_.clear();
+      if (is_learning_impossible_())
         return SUCCESS;
       invalidate();
       return FAILED;
@@ -650,7 +918,7 @@ namespace fflow {
     if (output_is_sparse())
       set_sparseout_data_(data);
     else
-      nparsout = nndeps_ * (nnindeps_ + unsigned(!homog_));
+      nparsout = nndeps_ * (nnindeps_ + unsigned(!(flag_ & HOMOG_)));
 
     return SUCCESS;
   }
@@ -677,10 +945,8 @@ namespace fflow {
 
     SparseMatrix & mat = mat_(data);
 
-    if (!has_max_row_())
-      mat.toReducedRowEcholon(mod, xinfo_.get());
-    else
-      mat.toReducedRowEcholonWithMaxRow(mod, maxrow_, backsubst_, xinfo_.get());
+    mat.toReducedRowEcholon(mod, maxcol_, !(flag_ & NO_BACKSUBST_),
+                            !(flag_ & KEEP_ALL_OUTS_), xinfo_.get());
 
     if (mat.isImpossibleSystem())
       return FAILED;
@@ -688,37 +954,43 @@ namespace fflow {
     if (check_dependent_variables_(data) != SUCCESS)
       return FAILED;
 
-    unsigned pos = 0, ndeps = adata_(data).depv_.size();
-    std::size_t * depv = adata_(data).depv_.data();
+    unsigned pos = 0;
+    unsigned ndeps = nndeps_ - zerodeps_.size();
 
     if (!output_is_sparse()) {
 
+      if (zerodeps_.size()) {
+        const unsigned n0 = zerodeps_.size() * (nnindeps_ + unsigned(!(flag_ & HOMOG_)));
+        std::fill(xout, xout + n0, 0);
+        pos += n0;
+      }
+
       for (unsigned i=0; i<ndeps; ++i) {
 
-        if (xinfo_[depv[i]] & LSVar::IS_NEEDED) {
-          for (unsigned j=0; j<nnindeps_; ++j)
-            xout[pos++] = neg_mod(mat(i,needed_indep_[j]), mod);
-          if (!homog_)
-            xout[pos++] = mat(i, nvars());
-        }
+        const unsigned eq = outeq_pos_[i];
+        for (unsigned j=0; j<nnindeps_; ++j)
+          xout[pos++] = neg_mod(mat(eq,needed_indep_[j]), mod);
+        if (!(flag_ & HOMOG_))
+          xout[pos++] = mat(eq, nvars());
 
       }
 
     } else {
 
-      unsigned k=0;
+      bool homog = (flag_ & HOMOG_);
       for (unsigned i=0; i<ndeps; ++i) {
 
-        if (xinfo_[depv[i]] & LSVar::IS_NEEDED) {
-          const auto & elems = (*sparseout_data_)[k];
-          const unsigned elsize = elems.size();
-          for (unsigned j=0; j<elsize; ++j) {
-            if (homog_ || elems[j] != nvars())
-              xout[pos++] = neg_mod(mat(i,elems[j]), mod);
-            else
-              xout[pos++] = mat(i, nvars());
-          }
-          ++k;
+        const auto & elems = (*sparseout_data_)[i+zerodeps_.size()];
+        const unsigned elsize = elems.size();
+        const auto & row = mat.row(outeq_pos_[i]);
+        if (row.size() < elsize + 1)
+          return FAILED;
+
+        for (unsigned j=0; j<elsize; ++j) {
+          if (homog || elems[j] != nvars())
+            xout[pos++] = neg_mod(row.el(j+1).val.get(), mod);
+          else
+            xout[pos++] = row.el(j+1).val.get();
         }
 
       }
@@ -741,27 +1013,34 @@ namespace fflow {
       mark_eq_(eqdeps, deq, marked);
   }
 
-  void SparseLinearSolver::mark_and_sweep_eqs(AlgorithmData * data)
+  Ret SparseLinearSolver::mark_and_sweep_eqs(AlgorithmData * data)
   {
     if (eqdeps_.empty())
-      return;
+      return SUCCESS;
 
     std::unique_ptr<bool[]> marked(new bool[nnindepeqs_]());
 
-    unsigned ndeps = adata_(data).depv_.size();
-    std::vector<std::size_t> & depvl = adata_(data).depv_;
-    for (unsigned i=0; i<ndeps; ++i)
-      if (xinfo_[depvl[i]] & LSVar::IS_NEEDED)
-        mark_eq_(eqdeps_.data(), i, marked.get());
+    auto & mat = adata_(data).mat_;
+    for (unsigned j=0; j<nnindepeqs_; ++j) {
+      auto & row = mat.row(j);
+      const unsigned col = row.first_nonzero_column();
+      if (col == SparseMatrixRow::END)
+        break;
+      if (xinfo_[col] & LSVar::IS_NEEDED)
+        mark_eq_(eqdeps_.data(), j, marked.get());
+    }
 
     unsigned new_nnindepeqs=0;
-    SparseMatrix & mat = mat_(data);
-    depvl.clear();
-    for (unsigned i=0; i<ndeps; ++i) {
-      unsigned depv = mat.row(i).first_nonzero_column();
+    unsigned neqs_old = mat.nrows();
+    unsigned outeq=0;
+    for (unsigned i=0; i<neqs_old; ++i) {
+      auto & row = mat.row(i);
+      unsigned depv = row.first_nonzero_column();
       if (marked[i]) {
-        depvl.push_back(depv);
-        indepeqs_[new_nnindepeqs] = mat.row(i).id();
+        indepeqs_[new_nnindepeqs] = row.id();
+        if (xinfo_[depv] & LSVar::IS_NEEDED)
+          outeq_pos_[outeq++] = new_nnindepeqs;
+        mat.row(new_nnindepeqs).swap(row);
         ++new_nnindepeqs;
       } else {
         xinfo_[depv] |= LSVar::IS_SWEEPED;
@@ -773,7 +1052,9 @@ namespace fflow {
     eqdeps_.clear();
     eqdeps_.shrink_to_fit();
 
-    marked_and_sweeped_ = true;
+    flag_ |= MARKED_AND_SWEEPED_;
+
+    return SUCCESS;
   }
 
   Ret SparseLinearSolver::only_homogeneous(bool flag)
@@ -781,7 +1062,24 @@ namespace fflow {
     if (!is_mutable())
       return FAILED;
     invalidate();
-    homog_ = flag;
+    if (flag)
+      flag_ |= HOMOG_;
+    else
+      flag_ &= ~flag_t(HOMOG_);
+    return SUCCESS;
+  }
+
+  Ret SparseLinearSolver::only_non_homogeneous(bool flag)
+  {
+    if (!is_mutable() || stage_ != FIRST_)
+      return FAILED;
+    invalidate();
+    if (flag) {
+      optimize_zero_vars(true);
+      flag_ |= ONLY_NON_HOMOG_;
+    } else {
+      flag_ &= ~flag_t(ONLY_NON_HOMOG_);
+    }
     return SUCCESS;
   }
 
@@ -802,15 +1100,42 @@ namespace fflow {
     return SUCCESS;
   }
 
-  Ret SparseLinearSolver::sparse_output_with_maxrow(unsigned maxrow,
-                                                    bool backsubst)
+  Ret SparseLinearSolver::sparse_output_with_maxcol(unsigned maxcol,
+                                                    bool backsubst,
+                                                    bool keep_all_outs)
   {
     Ret ret = sparse_output();
     if (ret != SUCCESS)
       return ret;
-    maxrow_ = maxrow;
-    backsubst_ = backsubst;
+    maxcol_ = maxcol;
+    if (!backsubst)
+      flag_ |= NO_BACKSUBST_;
+    else
+      flag_ &= ~flag_t(NO_BACKSUBST_);
+    if (!keep_all_outs)
+      flag_ |= KEEP_ALL_OUTS_;
+    else
+      flag_ &= ~flag_t(KEEP_ALL_OUTS_);
     return ret;
+  }
+
+  Ret SparseLinearSolver::set_eq_weight(const int * eq_weight)
+  {
+    if (!is_mutable())
+      return FAILED;
+    invalidate();
+
+    if (!eq_weight) {
+      eq_weight_.reset();
+      return SUCCESS;
+    }
+
+    if (!eq_weight_.get())
+      eq_weight_.reset(new int[neqs_]);
+
+    std::copy(eq_weight, eq_weight+neqs_, eq_weight_.get());
+
+    return SUCCESS;
   }
 
   void SparseLinearSolver::set_sparseout_data_(const AlgorithmData * data)
@@ -821,27 +1146,46 @@ namespace fflow {
     sparseout_data_->resize(nndeps_);
 
     const SparseMatrix & mat = mat_(data);
+    const unsigned zero_size = zerodeps_.size();
 
-    const unsigned ndeps = adata_(data).depv_.size();
-    const std::size_t * depv = adata_(data).depv_.data();
+    for (unsigned i=0; i<zero_size; ++i)
+      (*sparseout_data_)[i].resize(0);
+
     unsigned nout = 0;
-    unsigned k=0;
-    for (unsigned i=0; i<ndeps; ++i) {
-      if (xinfo_[depv[i]] & LSVar::IS_NEEDED) {
-        auto & elems = (*sparseout_data_)[k];
-        const SparseMatrixRow & row = mat.row(i);
-        const unsigned elsize = row.size()-1;
-        elems.resize(elsize);
-        for (unsigned j=0; j<elsize; ++j)
-          elems[j] = row.el(j+1).col;
-        if (homog_ && elsize>=1 && elems[elsize-1] == nvars())
-          elems.pop_back();
-        nout += elems.size();
-        ++k;
-      }
+    const bool homog = (flag_ & HOMOG_);
+    for (unsigned i=zero_size, eqidx=0; i<nndeps_; ++i,++eqidx) {
+      auto & elems = (*sparseout_data_)[i];
+      const SparseMatrixRow & row = mat.row(outeq_pos_[eqidx]);
+      const unsigned elsize = row.size()-1;
+      elems.resize(elsize);
+      for (unsigned j=0; j<elsize; ++j)
+        elems[j] = row.el(j+1).col;
+      if (homog && elsize>=1 && elems[elsize-1] == nvars())
+        elems.pop_back();
+      nout += elems.size();
     }
 
     nparsout = nout;
+  }
+
+  void SparseLinearSolver::zero_vars(std::vector<unsigned> & zeroes) const
+  {
+    zeroes.clear();
+    for (unsigned j=0; j<nvars_; ++j)
+      if (!(xinfo_[j] & LSVar::IS_NON_ZERO) && (xinfo_[j] & LSVar::IS_DEP))
+        zeroes.push_back(j);
+  }
+
+  Ret SparseLinearSolver::optimize_zero_vars(bool flag)
+  {
+    if (!is_mutable())
+      return FAILED;
+    invalidate();
+    if (flag)
+      flag_ |= ZEROVAR_OPTIMIZATION;
+    else
+      flag_ &= ~flag_t(ZEROVAR_OPTIMIZATION);
+    return SUCCESS;
   }
 
 } // namespace fflow

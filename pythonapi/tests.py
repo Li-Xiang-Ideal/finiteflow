@@ -27,9 +27,9 @@ def testRatFun():
     output2 = EvaluateRatFunList(rec, x, prime_no)
 
     if output1 != output2:
-        print("- Test 1/2 failed :(")
+        print("- Test 1/3 failed :(")
         exit(1)
-    print("- Test 1/2 passed!!!")
+    print("- Test 1/3 passed!!!")
 
     # build another graph evaluating the reconstructed result
     graph2,innode2 = NewGraphWithInput(nvars)
@@ -39,9 +39,19 @@ def testRatFun():
 
     # compare again
     if output1 != output3:
-        print("- Test 2/2 failed :(")
+        print("- Test 2/3 failed :(")
         exit(1)
-    print("- Test 2/2 passed!!!")
+    print("- Test 2/3 passed!!!")
+
+
+    degdata = ParallelReconstructDegreeData(graph)
+    rec2 = ReconstructFunctionWithDegrees(graph,degdata)
+    if rec2.monomials() != rec.monomials():
+        print("- Test 3/3 failed :(")
+        exit(1)
+    DeleteGraph(graph)
+    DeleteGraph(graph2)
+    print("- Test 3/3 passed!!!")
 
 
 def testParsing():
@@ -130,6 +140,7 @@ def testTutorial2():
         print("- Test failed: reconstructed wrong result")
         exit(1)
 
+    DeleteGraph(mygraph)
     print("- Test passed!")
 
 
@@ -202,8 +213,8 @@ def testBasicRatFunInterface():
     print("- Test passed!")
 
 
-def testLSolver(type):
-    print("Test {} linear solver".format(type))
+def testLSolver(type, sparse):
+    print("Test {} {} linear solver".format("sparse" if sparse else "dense", type))
 
     # Solving:
     # [ (a1 + a2) x + (a1 - a2) y == a1/a2,
@@ -227,41 +238,60 @@ def testLSolver(type):
             "3", "-1", "1/2",
             "1", "1/2"
         ]
+    if not sparse:
+        coeffs.append("0")
+
     cols = [[0,1,2], [0,1]] # non-zero columns for each row
+    n_eqs = 2
     n_unknowns = 2
 
     if type == "analytic":
         mygraph, myinput = NewGraphWithInput(len(["a1", "a2"]))
-        ccs = ParseRatFun(["a1", "a2"], coeffs)
-        sys = AlgAnalyticSparseLSolve(mygraph, myinput, n_unknowns, cols, ccs)
+        if sparse:
+            ccs = ParseIdxRatFun(["a1", "a2"], coeffs)
+            sys = AlgAnalyticSparseLSolve(mygraph, myinput, n_unknowns, cols, ccs)
+        else:
+            ccs = ParseRatFun(["a1", "a2"], coeffs)
+            sys = AlgAnalyticDenseLSolve(mygraph, myinput, n_eqs, n_unknowns, ccs)
     elif type == "node":
         mygraph, myinput = NewGraphWithInput(len(["a1", "a2"]))
         ccs = ParseRatFun(["a1", "a2"], coeffs)
         rf = AlgRatFunEval(mygraph, myinput, ccs)
-        sys = AlgNodeSparseLSolve(mygraph, rf, n_unknowns, cols)
+        if sparse:
+            sys = AlgNodeSparseLSolve(mygraph, rf, n_unknowns, cols)
+        else:
+            sys = AlgNodeDenseLSolve(mygraph, rf, n_eqs, n_unknowns)
     else:
         mygraph = NewGraph()
-        sys = AlgNumericSparseLSolve(mygraph, n_unknowns, cols, coeffs)
+        if sparse:
+            sys = AlgNumericSparseLSolve(mygraph, n_unknowns, cols, coeffs)
+        else:
+            sys = AlgNumericDenseLSolve(mygraph, n_eqs, n_unknowns, coeffs)
+
     SetOutputNode(mygraph,sys)
     Learn(mygraph)
+
     if LSolveDepVars(mygraph,sys) != [0,1]:
-        print(- "Test failed: something wrong with the system")
+        print("- Dep vars = ",LSolveDepVars(mygraph,sys))
+        print("- Test failed: something wrong with the system")
         exit(1)
 
-    LSolveMarkAndSweepEqs(mygraph, sys)
-    if type == "analytic" or type == "numeric":
-        LSolveDeleteUnneededEqs(mygraph, sys)
+    if sparse:
+        LSolveMarkAndSweepEqs(mygraph, sys)
+        if type == "analytic" or type == "numeric":
+            LSolveDeleteUnneededEqs(mygraph, sys)
 
     if type == "analytic" or type == "node":
         rec = ReconstructFunction(mygraph)
         if EvaluateRatFunList(rec, [1,2], 0) != [2767011611056432735, 3689348814741910313]:
-            print(- "Test failed: something wrong with the reconstructed solution")
+            print("- Test failed: something wrong with the reconstructed solution")
             exit(1)
     else:
         if EvaluateGraph(mygraph, [], 0) != [2767011611056432735, 3689348814741910313]:
-            print(- "Test failed: something wrong with the reconstructed solution")
+            print("- Test failed: something wrong with the reconstructed solution")
             exit(1)
 
+    DeleteGraph(mygraph)
     print("- Test passed!")
 
 
@@ -295,6 +325,8 @@ def testLaurent():
     if EvaluateRatFunList(rec, [24,45], 10) != check:
         print("- Failed check")
         exit(1)
+    DeleteGraph(g1)
+    DeleteGraph(g2)
     print("- Test passed")
 
 
@@ -338,8 +370,271 @@ def testLists():
     if EvaluateGraph(g, [], 0) != [30, 164, 80]:
         print("- Check failed!")
         exit(1)
+
+    # Test TakeUnique
+    unique_ab,fromunique_ab = TakeUnique(g, node_ab)
+    SetOutputNode(g, unique_ab)
+    if EvaluateGraph(g, [], 0) != list(range(5)) or \
+       fromunique_ab != list(range(4)) + list(range(5)):
+        print("- Check failed for TakeUnique!")
+        exit(1)
+
+    taddbl = AlgTakeAndAddBL(g, [node_amat, node_bmat, mat_mul],
+                             [
+                                 [(0,0,0,0),(0,4,1,2)],
+                                 [(0,1,0,2),(2,1,0,0),(0,1,0,1)],
+                                 [(0,3,2,0)]
+                            ])
+    SetOutputNode(g, taddbl)
+    if EvaluateGraph(g, [], 0) != [2*2 + 4*24, 2*4 + 158*2 + 2*2, 2*78]:
+        print("- Check failed!")
+        exit(1)
+
+    DeleteGraph(g)
     print("- Test passed!")
 
+
+def testEvaluate():
+    print("Testing EvaluatePoints")
+
+    from random import randint
+    rand = lambda : randint(123456789123456789, PrimeNo(0)-1)
+
+    funcs = testTutorial2AnalyticCheck()
+    g,inp = NewGraphWithInput(3)
+    node = AlgRatFunEval(g,inp,ParseRatFun(("x1","x2","x3"),funcs))
+    SetOutputNode(g,node)
+
+    points = list(tuple(rand() for _ in range(3)) for _ in range(7))
+    EvaluatePoints(g,points)
+
+    DeleteGraph(g)
+    print("- Test passed!")
+
+
+def testUnivariate_(parallel,mod):
+    nfuns = 100
+    fun = list("1+x^{}".format(i) for i in range(1,nfuns+1))
+
+    g,inp = NewGraphWithInput(1)
+    rf = AlgRatFunEval(g,inp,ParseRatFun(["x"],fun))
+    SetOutputNode(g,rf)
+
+    if (parallel):
+        if (mod):
+            res = ParallelReconstructUnivariateMod(g)
+        else:
+            res = ParallelReconstructUnivariate(g)
+    else:
+        if (mod):
+            res = ReconstructFunctionMod(g)
+        else:
+            res = ReconstructFunction(g)
+
+    if (mod):
+        prime_no = 0
+    else:
+        prime_no = 10
+    pp = PrimeNo(prime_no)
+    evals = EvaluateRatFunList(res,[2],prime_no)
+    check = list((1+2**i) % pp for i in range(1,nfuns+1))
+
+    if evals == check:
+        return Success()
+    else:
+        print("- Check failed with parallel = {}, mod = {}"
+              .format(parallel,mod))
+        return FFlowError()
+
+    DeleteGraph(g)
+
+def testUnivariate():
+    print("Testing univariate reconstruction")
+    SUCCESS = Success()
+    if testUnivariate_(False,False) != SUCCESS:
+        exit(1)
+    if testUnivariate_(False,True) != SUCCESS:
+        exit(1)
+    if testUnivariate_(True,False) != SUCCESS:
+        exit(1)
+    if testUnivariate_(True,True) != SUCCESS:
+        exit(1)
+    print("- Test passed")
+
+def testNumeric():
+    print("Numerical tests")
+
+    # Reconstruction
+    length = 10
+    ratnums = list('{}/{}'.format(i,i+1) for i in range(1,length))
+    g = NewGraph()
+    nev = AlgRatNumEval(g, ratnums)
+    SetOutputNode(g,nev)
+    rec = ReconstructNumeric(g)
+    if rec != ratnums:
+        print("- Numerical reconstruction failed!")
+        exit(1)
+    DeleteGraph(g)
+
+    # Chinese remainder
+    x = "100000000000000/99999999999"
+    y = "100000000000003/99999999998"
+    x0 = 8084042683842557234
+    x1 = 2691542216189571617
+    y0 = 5820300346345761690
+    y1 = 4643407741435786205
+    cr,ptot = ChineseRemainder([x0,y0],PrimeNo(0),[x1,y1],PrimeNo(1))
+
+    # Rational reconstruction
+    rec = RatRec(cr,ptot)
+    if rec != [x,y]:
+        print("- Test of Chinese remainder + rational reconstruction failed!")
+        exit(1)
+
+    # RatMod utility
+    if RatMod([x,y], 1) != [x1,y1]:
+        print("- Test of RatMod failed!")
+        exit(1)
+
+    print("- Test passed")
+
+
+def testLSolverEx():
+    print("Test linear solver 'ex'")
+    with GraphContextWithInput(1) as (g,inp):
+        unused = AlgRatNumEval(g,["1","2","3"])
+        # w0 = -1
+        # w1 = 1
+        # w2 = t
+        # w3 = t^2
+        ws = AlgRatFunEval(g,inp,ParseRatFun(["t"],"-1,1,t,t^2".split(",")))
+        w1 = (0,1)
+        w2 = (0,2)
+        w3 = (0,3)
+        nonzero_cols = [
+            # (w1 * t * x + (w2 * 1/t + w3 * t) * y == (w1))
+            [(0,[w1]), (1,[w2,w3]), (2,[w1])],
+            # (w1*t - (1)*w2) * y == 0
+            [(1,[w1,w2])],
+            # (w1 * t * x + (w1*t - (1)*w2) * y == w2)
+            [(0,[w1]), (1,[w1,w2]), (2,[w2])]
+        ]
+        nonzero_ccs = ParseIdxRatFun(
+            ["t"],
+            ("t,1/t,t,1,"+\
+             "t,-1,"+\
+             "t,t,-1,1").split(",")
+        )
+        ls = AlgAnalyticSparseLSolveEx(g,[inp,ws],2,nonzero_cols,nonzero_ccs)
+        SetOutputNode(g,ls)
+        Learn(g)
+        depvars = LSolveDepVars(g, ls)
+        indepvars = LSolveIndepVars(g, ls)
+        impossible = LSolveIsImpossible(g,ls)
+        if impossible or (depvars != [0,1] and depvars != [1,0]):
+            print("- Test of depvars failed")
+            exit(1)
+        LSolveMarkAndSweepEqs(g, ls)
+        LSolveDeleteUnneededEqs(g, ls)
+        pt = [1234567890]
+        rec = ReconstructFunction(g)
+        check = ParseRatFun(["t"],["1","(-t+1)/(1+t^3)"])
+        if EvaluateRatFunList(rec,pt,0) == EvaluateRatFunList(check,pt,0):
+            print("- Test passed")
+        else:
+            print("- Test failed")
+            exit(1)
+
+
+def testSubgraph():
+    print("Test Subgraph Map")
+    with GraphContextWithInput(2) as (g,inp):
+        funs = ParseRatFun(["x","y"],
+                           ["x","x^2","y","y^2"])
+        rf = AlgRatFunEval(g,inp,funs)
+        SetOutputNode(g,rf)
+
+        with GraphContextWithInput(1) as (g2,inp2):
+            rfa = AlgRatFunEval(g2,inp2,ParseRatFun(["x"],["x","x^2"]))
+            rfb = AlgRatFunEval(g2,inp2,ParseRatFun(["x"],["x^3","x^4"]))
+            sub = AlgSubgraphMap(g2,[rfa,rfb],g)
+            SetOutputNode(g2,sub)
+
+            ev = EvaluateGraph(g2,[2],0)
+            if ev == [2,2**2,2**2,2**4,2**3,2**6,2**4,2**8]:
+                print("- Test passed")
+            else:
+                print("- Test failed")
+                exit(1)
+
+
+def testSubgraphRec():
+    print("Test Subgraph Rec")
+    with GraphContextWithInput(3) as (g,inp):
+        funs = ParseRatFun(["x","y","t"],
+                           ["x + y*t","(1+x*y*t)/(x + y^2*t)"])
+        rf = AlgRatFunEval(g,inp,funs)
+        SetOutputNode(g,rf)
+
+        with GraphContextWithInput(1) as (g2,inp2):
+            sub = AlgSubgraphRec(g2,inp2,g,2)
+            SetOutputNode(g2,sub)
+            Learn(g2)
+
+            exps = SubgraphRecExponents(g2,sub)
+            exps_check = [([(1, 0), (0, 1)], [(0, 0)]),
+                          ([(1, 1), (0, 0)], [(0, 2), (1, 0)])]
+            if not exps == exps_check:
+                print("- Test failed: wrong monomial exponents")
+
+            tval = 1234567890
+            ev = EvaluateGraph(g2,[tval],0)
+            if ev == [1,tval,1,
+                      tval,1,tval,1]:
+                print("- Test passed")
+            else:
+                print("- Test failed")
+                exit(1)
+
+
+def testRatFunEvalFromCoeffs():
+    print("Test RatFunEvalFromCoeffs")
+    with GraphContextWithInput(2) as (g,inp):
+
+        rn = AlgRatNumEval(g,(1,2,3,4))
+
+        # note: here the coefficients 0,1,3,4 will be indexes inside
+        # the first input node (rn) and not actual numerical values.
+        fun = ParseRatFun(["x","y"],["(0 x + 1 y)/(2 x + 3 y)"])
+        if not len(fun.monomials()[0][0]) == len(fun.monomials()[0][1]) == 2:
+            print("- Something wrong with parser function")
+            exit(1)
+
+        rf = AlgRatFunEvalFromCoeffs(g,rn,inp,fun)
+        SetOutputNode(g,rf)
+
+        rec = ReconstructFunction(g)
+        pt = [1234567,67890123]
+        check = ParseRatFun(["x","y"],["(1 x + 2 y)/(3 x + 4 y)"])
+        if not EvaluateRatFunList(rec,pt,3) == EvaluateRatFunList(check,pt,3):
+            print("- Test failed!")
+            exit(1)
+
+        print("- Test passed!")
+
+
+def testRatExpr():
+    print("Test RatExprEval")
+    rf = RatExprToRatFunList(["(-1/3433683820292512484657849089281 - x^(-1) - y^2)^(-2)",
+                              "(x^2 - y^(-1))*(1 + z^(-2))^2"],
+                             variables=["x","y","z"])
+    point = [758187025378063064,4448666498048535379,2564206275484034988]
+    check = [5118394223678577184, 1684865360044594812]
+    if EvaluateRatFunList(rf,point,prime_no=0)==check:
+        print("- Test passed!")
+    else:
+        print("- Test failed!")
+        exit(1)
 
 
 if __name__ == '__main__':
@@ -347,8 +642,19 @@ if __name__ == '__main__':
     testParsing()
     testTutorial2()
     testBasicRatFunInterface()
-    testLSolver("analytic")
-    testLSolver("node")
-    testLSolver("numeric")
+    testLSolver("analytic",True)
+    testLSolver("node",True)
+    testLSolver("numeric",True)
+    testLSolver("analytic",False)
+    testLSolver("node",False)
+    testLSolver("numeric",False)
+    testLSolverEx()
     testLaurent()
     testLists()
+    testEvaluate()
+    testUnivariate()
+    testNumeric()
+    testSubgraph()
+    testSubgraphRec()
+    testRatFunEvalFromCoeffs()
+    testRatExpr()

@@ -19,7 +19,9 @@
 #include <fflow/subgraph_fit.hh>
 #include <fflow/subgraph_reconstruct.hh>
 #include <fflow/node_solver.hh>
+#include <fflow/eval_count.hh>
 #include <fflow/cached_subgraph.hh>
+#include <fflow/ratexpr_parser.hh>
 #include <mathlink.h>
 #include <WolframLibrary.h>
 using namespace fflow;
@@ -31,6 +33,18 @@ namespace fflow {
     MLINK link = libData->getWSLINK(libData);
     MLPutFunction(link, "EvaluatePacket", 1);
     MLPutFunction(link, "Print", 1);
+    MLPutString(link, str.c_str());
+    libData->processWSLINK(link);
+
+    if (MLNextPacket(link) == RETURNPKT)
+      MLNewPacket(link);
+  }
+
+  void fflowml_logerr(WolframLibraryData libData, const std::string & str)
+  {
+    MLINK link = libData->getWSLINK(libData);
+    MLPutFunction(link, "EvaluatePacket", 1);
+    MLPutFunction(link, "FiniteFlow`Private`LogErr", 1);
     MLPutString(link, str.c_str());
     libData->processWSLINK(link);
 
@@ -53,8 +67,6 @@ namespace fflow {
 } // namespace fflow
 
 
-#ifndef FFLOW_NO_DBG
-
 namespace  {
 
   class MathDbgPrint : public fflow::DBGPrint {
@@ -62,6 +74,13 @@ namespace  {
 
     explicit MathDbgPrint(WolframLibraryData libData)
       : libData_(libData) {}
+
+    MathDbgPrint() : libData_(0) {}
+
+    void set(WolframLibraryData libData)
+    {
+      libData_ = libData;
+    }
 
     virtual void print(const std::string & msg)
     {
@@ -72,27 +91,44 @@ namespace  {
     WolframLibraryData libData_;
   };
 
-#define FFLOWML_SET_DBGPRINT() \
-  MathDbgPrint math_dbg_print_(libData); \
-  fflow::DBGPrintSet math_dbg_print_setter_(math_dbg_print_)
+  class MathLogErr : public fflow::DBGPrint {
+  public:
+
+    explicit MathLogErr(WolframLibraryData libData)
+      : libData_(libData) {}
+
+    MathLogErr() : libData_(0) {}
+
+    void set(WolframLibraryData libData)
+    {
+      libData_ = libData;
+    }
+
+    virtual void print(const std::string & msg)
+    {
+      fflowml_logerr(libData_, msg);
+    }
+
+  private:
+    WolframLibraryData libData_;
+  };
+
+  //#define FFLOWML_SET_DBGPRINT()        \
+  //  MathDbgPrint math_dbg_print_(libData);                    \
+  //  fflow::DBGPrintSet math_dbg_print_setter_(math_dbg_print_);   \
+  //  MathLogErr math_log_err_(libData);                            \
+  //  fflow::LogErrorSet math_log_error_setter_(math_log_err_)
+
+  MathDbgPrint math_dbg_print;
+  MathLogErr math_log_err;
 
 } // namespace
-
-#else
-
-#define FFLOWML_SET_DBGPRINT()
-
-#endif
 
 
 namespace  {
 
-  // global data
-
-  //const UInt DEFAULT_MOD = BIG_UINT_PRIMES[BIG_UINT_PRIMES_SIZE-1];
-
-  // mathematica global context
-  Session session;
+  // use the global session
+# define session (*global_session)
 
 
   // internal classes, functions and methods
@@ -511,10 +547,17 @@ namespace  {
     long n_rows, two, lcsize;
     int csize;
 
+    MLCheckFunction(mlp, "List", &lcsize);
+    data.c.resize(lcsize);
+    sys.cmap.resize(lcsize);
+    for (int j=0; j<lcsize; ++j) {
+      MathGetHornerFun getfun;
+      getfun.get_horner_ratfun(mlp, data.c[j], sys.cmap[j], ww);
+      nparsin = getfun.nvars;
+    }
+
     MLCheckFunction(mlp, "List", &n_rows);
     sys.rinfo.resize(n_rows);
-    data.c.resize(n_rows);
-    sys.cmap.resize(n_rows);
     for (int i=0; i<n_rows; ++i) {
       MLCheckFunction(mlp, "List", &two);
       {
@@ -523,18 +566,80 @@ namespace  {
         AnalyticSparseSolver::RowInfo & rinf = sys.rinfo[i];
         rinf.size = csize;
         rinf.cols.reset(new unsigned[csize]);
-        data.c[i].reset(new HornerRatFunPtr[csize]);
-        sys.cmap[i].reset(new MPHornerRatFunMap[csize]);
         std::copy(crinfo, crinfo+csize, rinf.cols.get());
         MLReleaseInteger32List(mlp, crinfo, csize);
-      }
-      MLCheckFunction(mlp, "List", &lcsize);
-      for (int j=0; j<csize; ++j) {
-        MathGetHornerFun getfun;
-        getfun.get_horner_ratfun(mlp, data.c[i][j], sys.cmap[i][j], ww);
-        nparsin = getfun.nvars;
+
+        mlint64 * idxrinfo;
+        MLGetInteger64List(mlp, &idxrinfo, &csize);
+        rinf.idx.reset(new std::size_t[csize]);
+        std::copy(idxrinfo, idxrinfo+csize, rinf.idx.get());
+        MLReleaseInteger64List(mlp, idxrinfo, csize);
       }
     }
+  }
+
+  Ret get_sparse_system_ex_data(MLINK mlp,
+                                const unsigned in_nodes_nparsin[],
+                                unsigned n_in_nodes,
+                                AnalyticSparseSolverEx & sys,
+                                AnalyticSparseSolverExData & data,
+                                HornerWorkspacePtr & ww,
+                                unsigned & nparsin)
+  {
+    Ret ret = SUCCESS;
+
+    long n_rows, two, lcsize;
+    int csize;
+
+    MLCheckFunction(mlp, "List", &lcsize);
+    data.c.resize(lcsize);
+    sys.cmap.resize(lcsize);
+    for (int j=0; j<lcsize; ++j) {
+      MathGetHornerFun getfun;
+      getfun.get_horner_ratfun(mlp, data.c[j], sys.cmap[j], ww);
+      nparsin = getfun.nvars;
+    }
+
+    MLCheckFunction(mlp, "List", &n_rows);
+    sys.rinfo.resize(n_rows);
+    for (int i=0; i<n_rows; ++i) {
+      MLCheckFunction(mlp, "List", &two);
+      {
+        int * crinfo;
+        MLGetInteger32List(mlp, &crinfo, &csize);
+        AnalyticSparseSolverEx::RowInfo & rinf = sys.rinfo[i];
+        rinf.size = csize;
+        rinf.cols.reset(new unsigned[csize]);
+        rinf.w.reset(new AnalyticSparseSolverEx::Weights[csize]);
+        std::copy(crinfo, crinfo+csize, rinf.cols.get());
+        MLReleaseInteger32List(mlp, crinfo, csize);
+
+        MLCheckFunction(mlp, "List", &lcsize);
+        for (unsigned k=0; k<csize; ++k) {
+          int wsizex3;
+          mlint64 * ws;
+          MLGetInteger64List(mlp, &ws, &wsizex3);
+          unsigned wsize = wsizex3/3;
+          rinf.w[k].size = wsize;
+          rinf.w[k].w.reset(new AnalyticSparseSolverEx::Weight[wsize]);
+          AnalyticSparseSolverEx::Weight * wn = rinf.w[k].w.get();
+          for (unsigned wj=0; wj<wsize; ++wj) {
+            wn[wj].node = ws[3*wj];
+            wn[wj].el = ws[3*wj+1];
+            wn[wj].idx = ws[3*wj+2];
+            if (ret == SUCCESS &&
+                (wn[wj].node+1 >= n_in_nodes ||
+                 wn[wj].el >= in_nodes_nparsin[wn[wj].node+1])) {
+              logerr("Indexes of weights out of bounds");
+              ret = FAILED;
+            }
+          }
+          MLReleaseInteger64List(mlp, ws, wsize);
+        }
+      }
+    }
+
+    return ret;
   }
 
 
@@ -561,9 +666,13 @@ namespace  {
     long n_rows, two, lcsize;
     int csize;
 
+    MLCheckFunction(mlp, "List", &lcsize);
+    sys.c.resize(lcsize);
+    for (int j=0; j<lcsize; ++j)
+      get_rational(mlp, sys.c[j]);
+
     MLCheckFunction(mlp, "List", &n_rows);
     sys.rinfo.resize(n_rows);
-    sys.c.resize(n_rows);
     for (int i=0; i<n_rows; ++i) {
       MLCheckFunction(mlp, "List", &two);
       {
@@ -572,13 +681,15 @@ namespace  {
         NumericSparseSolver::RowInfo & rinf = sys.rinfo[i];
         rinf.size = csize;
         rinf.cols.reset(new unsigned[csize]);
-        sys.c[i].reset(new MPRational[csize]);
         std::copy(crinfo, crinfo+csize, rinf.cols.get());
         MLReleaseInteger32List(mlp, crinfo, csize);
+
+        mlint64 * idxrinfo;
+        MLGetInteger64List(mlp, &idxrinfo, &csize);
+        rinf.idx.reset(new std::size_t[csize]);
+        std::copy(idxrinfo, idxrinfo+csize, rinf.idx.get());
+        MLReleaseInteger64List(mlp, idxrinfo, csize);
       }
-      MLCheckFunction(mlp, "List", &lcsize);
-      for (int j=0; j<csize; ++j)
-        get_rational(mlp, sys.c[i][j]);
     }
   }
 
@@ -625,6 +736,26 @@ namespace  {
       MathGetHornerFun getfun;
       getfun.get_horner_ratfun(mlp, sfun[j], map[j], ww);
       nvars = getfun.nvars;
+    }
+  }
+
+
+  template <typename T>
+  void put_subgraphrec_info(MLINK mlp, Algorithm * alg)
+  {
+    T & ls = *static_cast<T*>(alg);
+    const SparseRationalFunction * fun = ls.rec_function();
+    const unsigned nout = ls.subgraph()->nparsout;
+    const unsigned nrec = ls.n_rec_vars();
+    MLPutFunction(mlp, "List", nout);
+    for (unsigned j=0; j<nout; ++j) {
+      MLPutFunction(mlp, "List", 2);
+      MLPutFunction(mlp, "List", fun[j].numerator().size());
+      for (const auto & mon : fun[j].numerator())
+        MLPutInteger16List(mlp, mon.exponents(), nrec);
+      MLPutFunction(mlp, "List", fun[j].denominator().size());
+      for (const auto & mon : fun[j].denominator())
+        MLPutInteger16List(mlp, mon.exponents(), nrec);
     }
   }
 
@@ -676,8 +807,8 @@ namespace  {
         MLPutFunction(mlp, "List", 3);
 
         if (sizeof(std::size_t) == 8)
-          MLPutInteger64List(mlp,
-                             (mlint64*)ls.needed_depvars(),
+          MLPutInteger32List(mlp,
+                             (int*)ls.needed_depvars(),
                              ls.n_needed_depvars());
         else
           MLPutInteger32List(mlp,
@@ -686,8 +817,8 @@ namespace  {
 
         if (!ls.output_is_sparse()) {
           if (sizeof(std::size_t) == 8)
-            MLPutInteger64List(mlp,
-                               (mlint64*)ls.needed_indepvars(),
+            MLPutInteger32List(mlp,
+                               (int*)ls.needed_indepvars(),
                                ls.n_needed_indepvars());
           else
             MLPutInteger32List(mlp,
@@ -745,6 +876,11 @@ namespace  {
         for (unsigned j=0; j<nfits; ++j) {
           const LinearFit & ls = multifit.linear_fit(j);
 
+          if (ls.is_impossible()) {
+            MLPutSymbol(mlp, "FiniteFlow`FFImpossible");
+            continue;
+          }
+
           MLPutFunction(mlp, "List", 3);
 
           if (sizeof(std::size_t) == 8)
@@ -788,20 +924,10 @@ namespace  {
         MLPutInteger32List(mlp, salg.order(), pref_exp.size());
 
     } else if(dynamic_cast<SubgraphRec*>(alg)) {
-      SubgraphRec & ls = *static_cast<SubgraphRec*>(alg);
-      const SparseRationalFunction * fun = ls.rec_function();
-      const unsigned nout = ls.subgraph()->nparsout;
-      const unsigned nrec = ls.n_rec_vars();
-      MLPutFunction(mlp, "List", nout);
-      for (unsigned j=0; j<nout; ++j) {
-        MLPutFunction(mlp, "List", 2);
-        MLPutFunction(mlp, "List", fun[j].numerator().size());
-        for (const auto & mon : fun[j].numerator())
-          MLPutInteger16List(mlp, mon.exponents(), nrec);
-        MLPutFunction(mlp, "List", fun[j].denominator().size());
-        for (const auto & mon : fun[j].denominator())
-          MLPutInteger16List(mlp, mon.exponents(), nrec);
-      }
+      put_subgraphrec_info<SubgraphRec>(mlp, alg);
+
+    } else if(dynamic_cast<SubgraphUniRec*>(alg)) {
+      put_subgraphrec_info<SubgraphUniRec>(mlp, alg);
 
     } else {
       MLPutSymbol(mlp, "Null");
@@ -862,6 +988,30 @@ namespace  {
     return get_rec_opt(mlp, ReconstructionOptions());
   }
 
+  struct MathStringList {
+
+    void get_str(MLINK mlp, unsigned idx)
+    {
+      mlp_ = mlp;
+      MLGetString(mlp, &list[idx]);
+    }
+
+    void clear()
+    {
+      for (auto & str : list)
+        if (str)
+          MLReleaseString(mlp_, str);
+      list.clear();
+    }
+
+    ~MathStringList()
+    {
+      clear();
+    }
+
+    MLINK mlp_ = 0;
+    std::vector<const char *> list;
+  };
 
 } // namespace
 
@@ -876,15 +1026,35 @@ extern "C" {
 
   int WolframLibrary_initialize(WolframLibraryData libData)
   {
-    (void)(libData);
+    math_dbg_print.set(libData);
+    math_log_err.set(libData);
+    set_dbgprint(math_dbg_print);
+    set_logerr(math_log_err);
 	return 0;
   }
 
+  int fflowml_version(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int zero;
+
+    MLTestHead( mlp, "List", &zero);
+    MLNewPacket(mlp);
+
+    const int version[2] = {
+      FFLOW_VERSION,
+      FFLOW_VERSION_MINOR
+    };
+
+    MLPutInteger32List(mlp, version, 2);
+
+    return LIBRARY_NO_ERROR;
+  }
 
   int fflowml_mul_inv(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     mlint64 a, mod;
     int two;
@@ -904,7 +1074,6 @@ extern "C" {
   int fflowml_prime_no(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int prime_no;
     int two;
@@ -925,12 +1094,23 @@ extern "C" {
     return LIBRARY_NO_ERROR;
   }
 
+  int fflowml_n_available_primes(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int zero;
+    MLTestHead( mlp, "List", &zero);
+    MLNewPacket(mlp);
+    MLPutInteger32(mlp, BIG_UINT_PRIMES_SIZE);
+
+    return LIBRARY_NO_ERROR;
+  }
+
 
 #if 0
   int fflowml_tree_level(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
     int n_args, n_legs, n_flavs, n_vars;
     int * hels;
     mlint64 * flavs;
@@ -1004,7 +1184,6 @@ extern "C" {
   int fflowml_default_nthreads(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int zero;
     MLTestHead( mlp, "List", &zero);
@@ -1017,7 +1196,6 @@ extern "C" {
   int fflowml_graph_new(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int one;
     MLTestHead( mlp, "List", &one);
@@ -1032,7 +1210,6 @@ extern "C" {
   int fflowml_graph_dummy(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int one;
     MLTestHead( mlp, "List", &one);
@@ -1050,7 +1227,6 @@ extern "C" {
   int fflowml_graph_delete(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int one;
     MLTestHead( mlp, "List", &one);
@@ -1068,7 +1244,6 @@ extern "C" {
   int fflowml_node_delete(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int one;
     MLTestHead( mlp, "List", &one);
@@ -1088,7 +1263,6 @@ extern "C" {
   int fflowml_graph_set_out_node(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1113,7 +1287,6 @@ extern "C" {
   int fflowml_graph_input_vars(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1135,10 +1308,29 @@ extern "C" {
     return LIBRARY_NO_ERROR;
   }
 
+  int fflowml_peek_new_node_id(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int one;
+    MLTestHead( mlp, "List", &one);
+    int id;
+    MLGetInteger32(mlp, &id);
+    MLNewPacket(mlp);
+
+    const Graph * g = session.graph(id);
+
+    if (!g)
+      MLPutSymbol(mlp, "$Failed");
+    else
+      MLPutInteger32(mlp, g->peek_new_node_id());
+
+    return LIBRARY_NO_ERROR;
+  }
+
   int fflowml_graph_nparsout(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1164,7 +1356,6 @@ extern "C" {
   int fflowml_node_nparsout(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1191,7 +1382,6 @@ extern "C" {
   int fflowml_node_set_mutable(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1218,7 +1408,6 @@ extern "C" {
   int fflowml_graph_prune(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1244,7 +1433,6 @@ extern "C" {
   int fflowml_graph_edges(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1278,7 +1466,6 @@ extern "C" {
   int fflowml_graph_nodes(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1312,7 +1499,6 @@ extern "C" {
   int fflowml_alg_simple_subgraph(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1369,7 +1555,6 @@ extern "C" {
   int fflowml_alg_memoized_subgraph(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1426,7 +1611,6 @@ extern "C" {
   int fflowml_alg_subgraph_map(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1484,7 +1668,6 @@ extern "C" {
   int fflowml_alg_dense_system(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1537,7 +1720,6 @@ extern "C" {
   int fflowml_alg_sparse_system(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs, nvars;
     MLNewPacket(mlp);
@@ -1566,7 +1748,7 @@ extern "C" {
     int * neededv;
     int needed_size;
     MLGetInteger32List(mlp, &neededv, &needed_size);
-    alg.init(data->c.size(), nvars, (unsigned*)neededv, needed_size, *data);
+    alg.init(alg.rinfo.size(), nvars, (unsigned*)neededv, needed_size, *data);
     MLReleaseInteger32List(mlp, neededv, needed_size);
     MLNewPacket(mlp);
 
@@ -1592,7 +1774,6 @@ extern "C" {
   int fflowml_alg_num_dense_system(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1641,7 +1822,6 @@ extern "C" {
   int fflowml_alg_node_dense_system(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1691,7 +1871,6 @@ extern "C" {
   int fflowml_alg_node_sparse_system(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs, nvars;
     MLNewPacket(mlp);
@@ -1717,6 +1896,7 @@ extern "C" {
     MLCheckFunction(mlp, "List", &n_rows);
     sys.rinfo.resize(n_rows);
     unsigned ncoeffs = 0;
+    bool okcols = true;
     for (int i=0; i<n_rows; ++i) {
       {
         int * crinfo;
@@ -1725,19 +1905,36 @@ extern "C" {
         rinf.start = ncoeffs;
         rinf.size = csize;
         rinf.cols.reset(new unsigned[csize]);
-        std::copy(crinfo, crinfo+csize, rinf.cols.get());
+        {
+          // check and copy list of columns
+          int last_var = -1;
+          unsigned * dest = rinf.cols.get();
+          for (unsigned j=0; j<csize; ++j, ++dest) {
+            if (int(crinfo[j]) <= last_var)
+              okcols = false;
+            last_var = *dest = crinfo[j];
+          }
+        }
         ncoeffs += csize;
         MLReleaseInteger32List(mlp, crinfo, csize);
       }
     }
 
-    int * neededv;
-    int needed_size;
-    MLGetInteger32List(mlp, &neededv, &needed_size);
-    alg.init_node_solver(sys.rinfo.size(), nvars,
-                         (unsigned*)neededv, needed_size, *data);
-    MLReleaseInteger32List(mlp, neededv, needed_size);
+    if (okcols) {
+      int * neededv;
+      int needed_size;
+      MLGetInteger32List(mlp, &neededv, &needed_size);
+      alg.init_node_solver(sys.rinfo.size(), nvars,
+                           (unsigned*)neededv, needed_size, *data);
+      MLReleaseInteger32List(mlp, neededv, needed_size);
+    }
     MLNewPacket(mlp);
+
+    if (!okcols) {
+      logerr("Invalid list of columns in node sparse solver");
+      MLPutSymbol(mlp, "$Failed");
+      return LIBRARY_NO_ERROR;
+    }
 
     if (!session.graph_exists(graphid)) {
       MLPutSymbol(mlp, "$Failed");
@@ -1761,7 +1958,6 @@ extern "C" {
   int fflowml_alg_num_sparse_system(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs, nvars;
     MLNewPacket(mlp);
@@ -1784,7 +1980,7 @@ extern "C" {
     int * neededv;
     int needed_size;
     MLGetInteger32List(mlp, &neededv, &needed_size);
-    alg.init(alg.c.size(), nvars, (unsigned*)neededv, needed_size, *data);
+    alg.init(alg.rinfo.size(), nvars, (unsigned*)neededv, needed_size, *data);
     MLReleaseInteger32List(mlp, neededv, needed_size);
     MLNewPacket(mlp);
 
@@ -1807,10 +2003,82 @@ extern "C" {
   }
 
 
+  int fflowml_alg_sparse_system_ex(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int nargs, nvars;
+    MLNewPacket(mlp);
+
+    MLTestHead( mlp, "List", &nargs);
+
+    int graphid;
+    std::vector<unsigned> inputnodes;
+    MLGetInteger32(mlp, &graphid);
+
+    get_input_nodes(mlp, inputnodes);
+
+    unsigned nparsin = 0;
+
+    MLGetInteger32(mlp, (int*)(&nparsin));
+    MLGetInteger32(mlp, &nvars);
+
+    typedef AnalyticSparseSolverExData Data;
+    std::unique_ptr<AnalyticSparseSolverEx> algptr(new AnalyticSparseSolverEx());
+    std::unique_ptr<Data> data(new Data());
+    auto & alg = *algptr;
+
+    alg.nparsin.resize(inputnodes.size());
+    for (unsigned i=1; i<inputnodes.size(); ++i) {
+      Node * node = session.node(graphid, inputnodes[i]);
+      if (!node) {
+        MLNewPacket(mlp);
+        MLPutSymbol(mlp, "$Failed");
+        return LIBRARY_NO_ERROR;
+      }
+      alg.nparsin[i] = node->algorithm()->nparsout;
+    }
+
+    Ret ret = get_sparse_system_ex_data(mlp,
+                                        alg.nparsin.data(),
+                                        alg.nparsin.size(),
+                                        alg,
+                                        *data, session.main_context()->ww,
+                                        nparsin);
+
+    if (ret == SUCCESS) {
+      set_first_nparsin(alg,nparsin);
+      int * neededv;
+      int needed_size;
+      MLGetInteger32List(mlp, &neededv, &needed_size);
+      alg.init(alg.rinfo.size(), nvars,
+               (unsigned*)neededv, needed_size, *data);
+      MLReleaseInteger32List(mlp, neededv, needed_size);
+    }
+    MLNewPacket(mlp);
+
+    if (ret != SUCCESS || !session.graph_exists(graphid)) {
+      MLPutSymbol(mlp, "$Failed");
+      return LIBRARY_NO_ERROR;
+    }
+
+    Graph * graph = session.graph(graphid);
+    unsigned id = graph->new_node(std::move(algptr), std::move(data),
+                                  inputnodes.data());
+
+    if (id == ALG_NO_ID) {
+      MLPutSymbol(mlp, "$Failed");
+    } else {
+      MLPutInteger32(mlp, id);
+    }
+
+    return LIBRARY_NO_ERROR;
+  }
+
+
   int fflowml_alg_json_sparse_system(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1859,7 +2127,6 @@ extern "C" {
   int fflowml_alg_json_ratfun(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -1908,7 +2175,6 @@ extern "C" {
   int fflowml_alg_system_reset_neeed(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int id, nodeid, nargs;
     MLNewPacket(mlp);
@@ -1936,17 +2202,13 @@ extern "C" {
             okay = false;
 
       } else if(dynamic_cast<SparseLinearSolver *>(alg)) {
-          SparseLinearSolver & ls = *static_cast<SparseLinearSolver *>(alg);
-          if (ls.marked_and_sweeped()) {
-            okay = false;
-          } else {
-            Ret ret = ls.reset_needed(session.alg_data(id, nodeid),
-                                      (unsigned*)neededv, needed_size);
-            if (ret == SUCCESS)
-              session.invalidate_subctxt_alg_data(id, nodeid);
-            else
-              okay = false;
-          }
+        SparseLinearSolver & ls = *static_cast<SparseLinearSolver *>(alg);
+        Ret ret = ls.reset_needed(session.alg_data(id, nodeid),
+                                  (unsigned*)neededv, needed_size);
+        if (ret == SUCCESS)
+          session.invalidate_subctxt_alg_data(id, nodeid);
+        else
+          okay = false;
 
       } else {
         okay = false;
@@ -1965,10 +2227,63 @@ extern "C" {
   }
 
 
+  int fflowml_alg_system_is_impossible(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int id, nodeid, nargs;
+    MLNewPacket(mlp);
+
+    MLTestHead( mlp, "List", &nargs);
+    MLGetInteger32(mlp, &id);
+    if (nargs > 1)
+      MLGetInteger32(mlp, &nodeid);
+    else
+      nodeid = session.get_output_node(id);
+    bool okay = true, ret = false;
+
+    Algorithm * alg = session.algorithm(id, nodeid);
+    if (!alg)
+      okay = false;
+
+    if (okay) {
+      if (dynamic_cast<DenseLinearSolver *>(alg)) {
+          DenseLinearSolver & ls = *static_cast<DenseLinearSolver *>(alg);
+          ret = ls.is_impossible();
+
+      } else if (dynamic_cast<SparseLinearSolver *>(alg)) {
+          SparseLinearSolver & ls = *static_cast<SparseLinearSolver *>(alg);
+          ret = ls.is_impossible();
+
+      } else if (dynamic_cast<LinearFit*>(alg) ||
+                 dynamic_cast<SubgraphFit*>(alg)) {
+        const LinearFit & ls = (dynamic_cast<LinearFit*>(alg) ?
+                                *static_cast<LinearFit*>(alg)
+                                : static_cast<SubgraphFit*>(alg)->linear_fit());
+        ret = ls.is_impossible();
+
+      } else {
+        okay = false;
+      }
+    }
+    MLNewPacket(mlp);
+
+    if (okay) {
+      if (ret)
+        MLPutSymbol(mlp, "True");
+      else
+        MLPutSymbol(mlp, "False");
+    } else {
+      MLPutSymbol(mlp, "$Failed");
+    }
+
+    return LIBRARY_NO_ERROR;
+  }
+
+
   int fflowml_alg_system_only_homogeneous(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int id, nodeid, nargs;
     MLNewPacket(mlp);
@@ -2008,10 +2323,54 @@ extern "C" {
   }
 
 
+  int fflowml_alg_system_only_non_homogeneous(WolframLibraryData libData,
+                                              MLINK mlp)
+  {
+    (void)(libData);
+
+    int id, nodeid, nargs;
+    MLNewPacket(mlp);
+
+    MLTestHead( mlp, "List", &nargs);
+    MLGetInteger32(mlp, &id);
+    MLGetInteger32(mlp, &nodeid);
+    bool okay = true;
+
+    Algorithm * alg = session.algorithm(id, nodeid);
+    if (!alg || !alg->is_mutable())
+      okay = false;
+
+    if (okay) {
+      if (dynamic_cast<DenseLinearSolver *>(alg)) {
+          DenseLinearSolver & ls = *static_cast<DenseLinearSolver *>(alg);
+          if (ls.only_non_homogeneous() != SUCCESS)
+            okay = false;
+          session.invalidate_subctxt_alg_data(id, nodeid);
+
+      } else if (dynamic_cast<SparseLinearSolver *>(alg)) {
+          SparseLinearSolver & ls = *static_cast<SparseLinearSolver *>(alg);
+          if (ls.only_non_homogeneous() != SUCCESS)
+            okay = false;
+          session.invalidate_subctxt_alg_data(id, nodeid);
+
+      } else {
+        okay = false;
+      }
+    }
+    MLNewPacket(mlp);
+
+    if (okay)
+      MLPutSymbol(mlp, "Null");
+    else
+      MLPutSymbol(mlp, "$Failed");
+
+    return LIBRARY_NO_ERROR;
+  }
+
+
   int fflowml_alg_system_sparse_output(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int id, nodeid, nargs;
     MLNewPacket(mlp);
@@ -2044,13 +2403,12 @@ extern "C" {
     return LIBRARY_NO_ERROR;
   }
 
-  int fflowml_alg_system_sparse_output_with_maxrow(WolframLibraryData libData, MLINK mlp)
+  int fflowml_alg_system_sparse_output_with_maxcol(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
-    int id, nodeid, nargs, maxrow, back_subst_flag;
-    bool back_subst = true;
+    int id, nodeid, nargs, maxrow, back_subst_flag, keep_all_outs_flag;
+    bool back_subst = true, keep_all_outs = false;
     MLNewPacket(mlp);
 
     MLTestHead( mlp, "List", &nargs);
@@ -2058,10 +2416,13 @@ extern "C" {
     MLGetInteger32(mlp, &nodeid);
     MLGetInteger32(mlp, &maxrow);
     MLGetInteger32(mlp, &back_subst_flag);
+    MLGetInteger32(mlp, &keep_all_outs_flag);
     bool okay = true;
 
     if(back_subst_flag == -1)
       back_subst = false;
+    if (keep_all_outs_flag == 1)
+      keep_all_outs = true;
 
     Algorithm * alg = session.algorithm(id, nodeid);
     if (!alg || !alg->is_mutable())
@@ -2070,7 +2431,7 @@ extern "C" {
     if (okay) {
       if (dynamic_cast<SparseLinearSolver *>(alg)) {
         SparseLinearSolver & ls = *static_cast<SparseLinearSolver *>(alg);
-        Ret ret = ls.sparse_output_with_maxrow(maxrow, back_subst);
+        Ret ret = ls.sparse_output_with_maxcol(maxrow, back_subst, keep_all_outs);
         if (ret == SUCCESS)
           session.invalidate_subctxt_alg_data(id, nodeid);
         else
@@ -2089,6 +2450,51 @@ extern "C" {
     return LIBRARY_NO_ERROR;
   }
 
+  int fflowml_alg_system_eq_weight(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int id, nodeid, nargs;
+    MLNewPacket(mlp);
+
+    MLTestHead( mlp, "List", &nargs);
+    MLGetInteger32(mlp, &id);
+    MLGetInteger32(mlp, &nodeid);
+    int * eq_weight;
+    int n;
+    MLGetInteger32List(mlp, &eq_weight, &n);
+    bool okay = true;
+
+    Algorithm * alg = session.algorithm(id, nodeid);
+    if (!alg || !alg->is_mutable())
+      okay = false;
+
+    if (okay) {
+      if (dynamic_cast<SparseLinearSolver *>(alg)) {
+        SparseLinearSolver & ls = *static_cast<SparseLinearSolver *>(alg);
+        if (n==ls.neqs()) {
+          ls.set_eq_weight(eq_weight);
+          session.invalidate_subctxt_alg_data(id, nodeid);
+        } else {
+          logerr("Equation weights have the wrong length.");
+          okay = false;
+        }
+      } else {
+        logerr("Not a sparse solver.");
+        okay = false;
+      }
+    }
+    MLReleaseInteger32List(mlp, eq_weight, n);
+    MLNewPacket(mlp);
+
+    if (okay)
+      MLPutSymbol(mlp, "Null");
+    else
+      MLPutSymbol(mlp, "$Failed");
+
+    return LIBRARY_NO_ERROR;
+  }
+
 
   int fflowml_alg_mark_and_sweep_eqs(WolframLibraryData libData, MLINK mlp)
   {
@@ -2097,7 +2503,6 @@ extern "C" {
     // invalidated in subcontexts
 
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int id, nodeid, nargs;
     MLNewPacket(mlp);
@@ -2111,13 +2516,13 @@ extern "C" {
     if (!alg) {
       MLPutSymbol(mlp, "$Failed");
     } else if (dynamic_cast<SparseLinearSolver *>(alg)) {
-      SparseLinearSolver & ls = *static_cast<SparseLinearSolver *>(alg);
-      if (ls.marked_and_sweeped()) {
-        MLPutSymbol(mlp, "$Failed");
-      } else {
-        ls.mark_and_sweep_eqs(session.alg_data(id, nodeid));
+      SparseLinearSolver &ls = *static_cast<SparseLinearSolver *>(alg);
+      Ret ret = ls.mark_and_sweep_eqs(session.alg_data(id, nodeid));
+      if (ret == SUCCESS) {
         session.invalidate_subctxt_alg_data(id, nodeid);
         MLPutInteger32(mlp, ls.n_indep_eqs());
+      } else {
+        MLPutSymbol(mlp, "$Failed");
       }
     } else {
       MLPutSymbol(mlp, "$Failed");
@@ -2130,7 +2535,6 @@ extern "C" {
   int fflowml_alg_delete_unneeded_eqs(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int id, nodeid, nargs;
     MLNewPacket(mlp);
@@ -2156,6 +2560,12 @@ extern "C" {
       session.invalidate_subctxt_alg_data(id, nodeid);
       MLPutSymbol(mlp, "Null");
 
+    } else if (dynamic_cast<AnalyticSparseSolverEx *>(alg)) {
+      auto & ls = *static_cast<AnalyticSparseSolverEx *>(alg);
+      ls.delete_unneeded_eqs(session.alg_data(id, nodeid));
+      session.invalidate_subctxt_alg_data(id, nodeid);
+      MLPutSymbol(mlp, "Null");
+
     } else {
       MLPutSymbol(mlp, "$Failed");
     }
@@ -2167,7 +2577,6 @@ extern "C" {
   int fflowml_alg_learn(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -2193,7 +2602,6 @@ extern "C" {
   int fflowml_alg_get_info(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -2221,7 +2629,6 @@ extern "C" {
   int fflowml_alg_set_learning_options(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -2251,10 +2658,50 @@ extern "C" {
   }
 
 
+  int fflowml_alg_solver_neqs_nvars(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int nargs;
+    MLNewPacket(mlp);
+    MLTestHead( mlp, "List", &nargs);
+
+    int id, nodeid;
+    MLGetInteger32(mlp, &id);
+    MLGetInteger32(mlp, &nodeid);
+    MLNewPacket(mlp);
+
+    Algorithm * alg = session.algorithm(id, nodeid);
+
+    if (!session.graph_exists(id)) {
+      MLPutSymbol(mlp, "$Failed");
+      return LIBRARY_NO_ERROR;
+    }
+
+    if (dynamic_cast<DenseLinearSolver*>(alg)) {
+      DenseLinearSolver & ls = *static_cast<DenseLinearSolver*>(alg);
+      MLPutFunction(mlp, "List", 2);
+      MLPutInteger32(mlp, ls.neqs());
+      MLPutInteger32(mlp, ls.nvars());
+
+    } else if (dynamic_cast<SparseLinearSolver*>(alg)) {
+      SparseLinearSolver & ls = *static_cast<SparseLinearSolver*>(alg);
+      MLPutFunction(mlp, "List", 2);
+      MLPutInteger32(mlp, ls.neqs());
+      MLPutInteger32(mlp, ls.nvars());
+
+    } else {
+      logerr("Not a solver");
+      MLPutSymbol(mlp, "$Failed");
+    }
+
+    return LIBRARY_NO_ERROR;
+  }
+
+
   int fflowml_alg_n_indep_eqs(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -2291,7 +2738,6 @@ extern "C" {
   int fflowml_alg_indep_eqs(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -2332,10 +2778,52 @@ extern "C" {
   }
 
 
+  int fflowml_alg_solver_zero_vars(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int nargs;
+    MLNewPacket(mlp);
+    MLTestHead( mlp, "List", &nargs);
+
+    int id, nodeid;
+    MLGetInteger32(mlp, &id);
+    MLGetInteger32(mlp, &nodeid);
+    MLNewPacket(mlp);
+
+    Algorithm * alg = session.algorithm(id, nodeid);
+
+    if (!session.graph_exists(id)) {
+      MLPutSymbol(mlp, "$Failed");
+      return LIBRARY_NO_ERROR;
+    }
+
+    if (dynamic_cast<DenseLinearSolver*>(alg)) {
+        DenseLinearSolver & ls = *static_cast<DenseLinearSolver*>(alg);
+        std::vector<int> zeroes;
+        for (unsigned i=0; i<ls.nvars(); ++i)
+          if (!(ls.xinfo()[i] & LSVar::IS_NON_ZERO))
+            zeroes.push_back(i);
+        MLPutInteger32List(mlp, zeroes.data(), zeroes.size());
+
+    } else if (dynamic_cast<SparseLinearSolver*>(alg)) {
+        SparseLinearSolver & ls = *static_cast<SparseLinearSolver*>(alg);
+        std::vector<unsigned> zeroes;
+        ls.zero_vars(zeroes);
+        MLPutInteger32List(mlp, (int*)zeroes.data(), zeroes.size());
+
+    } else {
+      MLPutSymbol(mlp, "$Failed");
+
+    }
+
+    return LIBRARY_NO_ERROR;
+  }
+
+
   int fflowml_alg_degrees(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -2370,7 +2858,6 @@ extern "C" {
   int fflowml_alg_vars_degrees(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int one;
     MLNewPacket(mlp);
@@ -2397,7 +2884,6 @@ extern "C" {
   int fflowml_alg_all_degrees(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -2435,7 +2921,6 @@ extern "C" {
   int fflowml_alg_sample(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int two;
     MLNewPacket(mlp);
@@ -2449,9 +2934,12 @@ extern "C" {
     ReconstructionOptions opt = get_rec_opt(mlp);
     MLNewPacket(mlp);
 
-    session.parallel_sample(id, nthreads, opt);
+    Ret ret = session.parallel_sample(id, nthreads, opt);
 
-    MLPutSymbol(mlp, "Null");
+    if (ret == SUCCESS)
+      MLPutSymbol(mlp, "Null");
+    else
+      MLPutSymbol(mlp, "$Failed");
 
     return LIBRARY_NO_ERROR;
   }
@@ -2460,7 +2948,6 @@ extern "C" {
   int fflowml_alg_sample_from_points(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int two;
     MLNewPacket(mlp);
@@ -2486,9 +2973,12 @@ extern "C" {
     MLNewPacket(mlp);
 
     SamplePointsFromFile pts(file.c_str(), samples_start, samples_size);
-    session.parallel_sample(id, nthreads, opt, &pts);
+    Ret ret = session.parallel_sample(id, nthreads, opt, &pts);
 
-    MLPutSymbol(mlp, "Null");
+    if (ret == SUCCESS)
+      MLPutSymbol(mlp, "Null");
+    else
+      MLPutSymbol(mlp, "$Failed");
 
     return LIBRARY_NO_ERROR;
   }
@@ -2497,7 +2987,6 @@ extern "C" {
   int fflowml_alg_reconstruct(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int one;
     MLNewPacket(mlp);
@@ -2551,7 +3040,6 @@ extern "C" {
   int fflowml_alg_reconstruct_mod(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int one;
     MLNewPacket(mlp);
@@ -2605,7 +3093,6 @@ extern "C" {
   int fflowml_alg_univariate_reconstruct(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int one;
     MLNewPacket(mlp);
@@ -2630,7 +3117,10 @@ extern "C" {
     Ret ret = session.reconstruct_univariate(id, res.get(), opt);
 
     if (ret != SUCCESS) {
-      MLPutSymbol(mlp, "$Failed");
+      if (ret == MISSING_PRIMES)
+        MLPutSymbol(mlp, "FiniteFlow`FFMissingPrimes");
+      else
+        MLPutSymbol(mlp, "$Failed");
       return LIBRARY_NO_ERROR;
     }
 
@@ -2646,7 +3136,6 @@ extern "C" {
                                              MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int one;
     MLNewPacket(mlp);
@@ -2686,7 +3175,6 @@ extern "C" {
   int fflowml_alg_numeric_reconstruct(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int one;
     MLNewPacket(mlp);
@@ -2695,7 +3183,7 @@ extern "C" {
     int id;
     MLGetInteger32(mlp, &id);
     ReconstructionOptions opt;
-    opt.max_primes = 20;
+    opt.max_primes = DEFAULT_MAX_REC_PRIMES;
     opt = get_rec_opt(mlp, opt);
     MLNewPacket(mlp);
 
@@ -2731,7 +3219,6 @@ extern "C" {
   int fflowml_alg_independent_of_var(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int id, var, n_args;
     MLNewPacket(mlp);
@@ -2756,7 +3243,6 @@ extern "C" {
   int fflowml_alg_nonzero(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args;
     MLNewPacket(mlp);
@@ -2802,7 +3288,6 @@ extern "C" {
   int fflowml_alg_ratfun_eval(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args, nfunctions;
     int nparsin=0;
@@ -2854,7 +3339,6 @@ extern "C" {
   int fflowml_alg_coeff_ratfun_eval(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args, nfunctions, ncoeffs;
     int nparsin=0;
@@ -2907,7 +3391,6 @@ extern "C" {
   int fflowml_alg_ratnum_eval(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args, nnumbers;
     MLNewPacket(mlp);
@@ -2952,7 +3435,6 @@ extern "C" {
   int fflowml_reset_ratnum_eval(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args, nnumbers;
     MLNewPacket(mlp);
@@ -3003,7 +3485,6 @@ extern "C" {
   int fflowml_alg_chain(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args;
     MLNewPacket(mlp);
@@ -3052,7 +3533,6 @@ extern "C" {
   int fflowml_alg_take(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args;
     MLNewPacket(mlp);
@@ -3114,7 +3594,6 @@ extern "C" {
   int fflowml_alg_slice(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args, start, end;
     MLNewPacket(mlp);
@@ -3164,7 +3643,6 @@ extern "C" {
   int fflowml_alg_add(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args;
     MLNewPacket(mlp);
@@ -3209,7 +3687,6 @@ extern "C" {
   int fflowml_alg_mul(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args;
     MLNewPacket(mlp);
@@ -3254,7 +3731,6 @@ extern "C" {
   int fflowml_alg_mat_mul(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args, nrows1, ncols1, ncols2;
     MLNewPacket(mlp);
@@ -3298,7 +3774,6 @@ extern "C" {
   int fflowml_alg_take_and_add(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args;
     MLNewPacket(mlp);
@@ -3364,7 +3839,6 @@ extern "C" {
     int fflowml_alg_take_and_add_bl(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args;
     MLNewPacket(mlp);
@@ -3434,7 +3908,6 @@ extern "C" {
   int fflowml_alg_linear_fit(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     std::vector<HornerRatFunPtr> cfun;
     std::vector<HornerRatFunPtr> ifun;
@@ -3578,7 +4051,6 @@ extern "C" {
   int fflowml_alg_numeric_fit(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     std::vector<HornerRatFunPtr> cfun;
     std::vector<HornerRatFunPtr> ifun;
@@ -3713,7 +4185,6 @@ extern "C" {
   int fflowml_alg_laurent(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -3788,7 +4259,6 @@ extern "C" {
   int fflowml_alg_subgraph_fit(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -3863,7 +4333,6 @@ extern "C" {
   int fflowml_alg_subgraph_multifit(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -3954,7 +4423,6 @@ extern "C" {
   int fflowml_alg_subgraph_rec(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -3966,10 +4434,6 @@ extern "C" {
     get_input_nodes(mlp, inputnodes);
     MLGetInteger32(mlp, &subgraphid);
 
-    typedef SubgraphRecData Data;
-    std::unique_ptr<SubgraphRec> algptr(new SubgraphRec());
-    std::unique_ptr<Data> data(new Data());
-
     int nrec=0, shiftvars=0;
     MLGetInteger32(mlp, &nrec);
     MLGetInteger32(mlp, &shiftvars);
@@ -3977,13 +4441,44 @@ extern "C" {
 
     Ret ret = FAILED;
 
-    if (inputnodes.size()==1) {
-      Node * node = session.node(graphid, inputnodes[0]);
-      if (node) {
-        unsigned npars = node->algorithm()->nparsout;
-        ret = algptr->init(session, subgraphid, *data,
-                           npars, nrec, shiftvars);
+    std::unique_ptr<Algorithm> alg;
+    std::unique_ptr<AlgorithmData> algdata;
+
+    if (nrec > 1) {
+
+      typedef SubgraphRecData Data;
+      std::unique_ptr<SubgraphRec> algptr(new SubgraphRec());
+      std::unique_ptr<Data> data(new Data());
+
+      if (inputnodes.size()==1) {
+
+        Node * node = session.node(graphid, inputnodes[0]);
+        if (node) {
+          unsigned npars = node->algorithm()->nparsout;
+          ret = algptr->init(session, subgraphid, *data,
+                             npars, nrec, shiftvars);
+          alg = std::move(algptr);
+          algdata = std::move(data);
+        }
       }
+
+    } else {
+
+      typedef SubgraphUniRecData Data;
+      std::unique_ptr<SubgraphUniRec> algptr(new SubgraphUniRec());
+      std::unique_ptr<Data> data(new Data());
+
+      if (inputnodes.size()==1) {
+
+        Node * node = session.node(graphid, inputnodes[0]);
+        if (node) {
+          unsigned npars = node->algorithm()->nparsout;
+          ret = algptr->init(session, subgraphid, *data, &npars, 1);
+          alg = std::move(algptr);
+          algdata = std::move(data);
+        }
+      }
+
     }
 
     if (ret != SUCCESS) {
@@ -4002,7 +4497,7 @@ extern "C" {
     }
 
     Graph * graph = session.graph(graphid);
-    unsigned id = graph->new_node(std::move(algptr), std::move(data),
+    unsigned id = graph->new_node(std::move(alg), std::move(algdata),
                                   inputnodes.data());
 
     if (id == ALG_NO_ID) {
@@ -4017,7 +4512,6 @@ extern "C" {
   int fflowml_default_maxdeg(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int zero;
     MLTestHead( mlp, "List", &zero);
@@ -4027,10 +4521,21 @@ extern "C" {
     return LIBRARY_NO_ERROR;
   }
 
+  int fflowml_default_max_rec_primes(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int zero;
+    MLTestHead( mlp, "List", &zero);
+    MLNewPacket(mlp);
+    MLPutInteger32(mlp, DEFAULT_MAX_REC_PRIMES);
+
+    return LIBRARY_NO_ERROR;
+  }
+
   int fflowml_dump_degrees(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs, gid;
     MLTestHead( mlp, "List", &nargs);
@@ -4053,7 +4558,6 @@ extern "C" {
   int fflowml_load_degrees(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs, gid;
     MLTestHead( mlp, "List", &nargs);
@@ -4073,10 +4577,38 @@ extern "C" {
     return LIBRARY_NO_ERROR;
   }
 
+  int fflowml_set_degrees(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int nargs, gid;
+
+    MLTestHead( mlp, "List", &nargs);
+    MLGetInteger32(mlp, &gid);
+
+    int * degdatain;
+    int n;
+    MLGetInteger32List(mlp, &degdatain, &n);
+    std::vector<unsigned> degdata(n);
+    std::copy(degdatain, degdatain+n, degdata.data());
+    MLReleaseInteger32List(mlp, degdatain, n);
+
+    MLNewPacket(mlp);
+
+    Ret ret = session.set_degrees(gid, degdata.data());
+
+    if (ret != SUCCESS) {
+      MLPutSymbol(mlp, "$Failed");
+    } else {
+      MLPutSymbol(mlp, "Null");
+    }
+
+    return LIBRARY_NO_ERROR;
+  }
+
   int fflowml_dump_sample_points(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs, gid;
     MLTestHead( mlp, "List", &nargs);
@@ -4100,7 +4632,6 @@ extern "C" {
   int fflowml_dump_evaluations(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs, gid;
     MLTestHead( mlp, "List", &nargs);
@@ -4123,7 +4654,6 @@ extern "C" {
   int fflowml_load_evaluations(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs, gid, nfiles;
     MLTestHead( mlp, "List", &nargs);
@@ -4153,7 +4683,6 @@ extern "C" {
   int fflowml_samples_file_size(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLTestHead( mlp, "List", &nargs);
@@ -4176,7 +4705,6 @@ extern "C" {
   int fflowml_npars_from_degree_info(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLTestHead( mlp, "List", &nargs);
@@ -4201,7 +4729,6 @@ extern "C" {
   int fflowml_graph_evaluate(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs, gid;
     MLTestHead( mlp, "List", &nargs);
@@ -4265,7 +4792,6 @@ extern "C" {
   int fflowml_graph_evaluate_list(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     const UInt max_primes = BIG_UINT_PRIMES_SIZE;
 
@@ -4339,7 +4865,7 @@ extern "C" {
 
     MLPutFunction(mlp, "List", n_points);
     for (int j=0; j<n_points; ++j) {
-      if (xout[j][0] == FAILED)
+      if (nparsout != 0 && xout[j][0] == FAILED)
         MLPutSymbol(mlp, "$Failed");
       else
         MLPutInteger64List(mlp, (mlint64*)(xout[j].get()), nparsout);
@@ -4353,7 +4879,6 @@ extern "C" {
   int fflowml_alg_sparse_mat_mul(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args, nrows1, ncols1, ncols2;
     MLNewPacket(mlp);
@@ -4401,9 +4926,9 @@ extern "C" {
 
     MLNewPacket(mlp);
 
-    alg.init(nrows1, ncols1, ncols2);
+    bool ok = alg.init(nrows1, ncols1, ncols2) == SUCCESS;
 
-    if (!session.graph_exists(graphid) || inputnodes.size() != 2) {
+    if (!ok || !session.graph_exists(graphid) || inputnodes.size() != 2) {
       MLPutSymbol(mlp, "$Failed");
       return LIBRARY_NO_ERROR;
     }
@@ -4425,7 +4950,6 @@ extern "C" {
   int fflowml_alg_count_sample_points(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int two;
     MLNewPacket(mlp);
@@ -4473,7 +4997,6 @@ extern "C" {
   int fflowml_alg_rat_rec(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int two, nints;
     MLNewPacket(mlp);
@@ -4505,11 +5028,48 @@ extern "C" {
     return LIBRARY_NO_ERROR;
   }
 
+  int fflowml_parallel_rat_rec(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int two, nints;
+    MLNewPacket(mlp);
+    MLTestHead(mlp, "List", &two);
+
+    MLTestHead(mlp, "List", &nints);
+    std::vector<MPInt> vec;
+    vec.resize(nints);
+    for (int j=0; j<nints; ++j)
+      get_integer(mlp,vec[j]);
+
+    MPInt p;
+    get_integer(mlp,p);
+
+    int nthreads;
+    MLGetInteger32(mlp, &nthreads);
+    if (nthreads < 0)
+      nthreads = 0;
+
+    MLNewPacket(mlp);
+
+    std::vector<MPRational> qvec;
+    qvec.resize(nints);
+    session.parallel_rat_rec(vec.data(), nints, p, qvec.data());
+
+    void (*gmpfreefunc) (void *, size_t);
+    mp_get_memory_functions(0, 0, &gmpfreefunc);
+
+    MLPutFunction(mlp, "List", nints);
+    for (int i=0; i<nints; ++i)
+      put_mprat(mlp, qvec[i], gmpfreefunc);
+
+    return LIBRARY_NO_ERROR;
+  }
+
 
   int fflowml_alg_ratexpr_eval(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int n_args, nfunctions;
     int nparsin=0;
@@ -4546,6 +5106,19 @@ extern "C" {
     for (int i=0; i<nnumbers; ++i)
       get_rational(mlp, numbers[i]);
 
+    int * varpowptr;
+    int varpowcount;
+    std::vector<AnalyticExpression::VarPow> varpows;
+    MLGetInteger32List(mlp,&varpowptr,&varpowcount);
+    if (varpowcount > 0) {
+      varpows.resize(varpowcount/2);
+      for (int j=0; j<varpowcount; j += 2) {
+        varpows[j/2].var = varpowptr[j];
+        varpows[j/2].exponent = varpowptr[j+1];
+      }
+    }
+    MLReleaseInteger32List(mlp, varpowptr, varpowcount);
+
     MLNewPacket(mlp);
 
     if (!session.graph_exists(graphid) || inputnodes.size() != 1) {
@@ -4555,7 +5128,96 @@ extern "C" {
 
     Graph * graph = session.graph(graphid);
 
-    alg.init(nparsin, std::move(bytecode), std::move(numbers), *data);
+    alg.init(nparsin, std::move(bytecode), std::move(numbers),
+             std::move(varpows), *data);
+    unsigned id = graph->new_node(std::move(algptr), std::move(data),
+                                  inputnodes.data());
+
+    if (id == ALG_NO_ID) {
+      MLPutSymbol(mlp, "$Failed");
+    } else {
+      MLPutInteger32(mlp, id);
+    }
+
+    return LIBRARY_NO_ERROR;
+  }
+
+
+  int fflowml_alg_ratexpr_parse(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int n_args, nfunctions;
+    int nparsin=0;
+    MLNewPacket(mlp);
+    MLTestHead( mlp, "List", &n_args);
+
+    int graphid;
+    std::vector<unsigned> inputnodes;
+    MLGetInteger32(mlp, &graphid);
+    get_input_nodes(mlp, inputnodes);
+
+    typedef AnalyticExpressionData Data;
+    std::unique_ptr<AnalyticExpression> algptr(new AnalyticExpression());
+    std::unique_ptr<Data> data(new Data());
+    AnalyticExpression & alg = *algptr;
+
+    MLGetInteger32(mlp, &nparsin);
+
+    std::string vars_prefix;
+    {
+      const char * varprefix_str;
+      MLGetString(mlp, &varprefix_str);
+      vars_prefix.assign(varprefix_str);
+      MLReleaseString(mlp, varprefix_str);
+    }
+
+#if 0
+    std::vector<std::string> * vars_list;
+    int vars_len = 0;
+    MLTestHead(mlp, "List", &vars_len);
+    for (unsigned j=0; j<vars_len; ++j) {
+      const char * varstr;
+      MLGetString(mlp, &varstr);
+      vars_list.push_back(varstr);
+      MLReleaseString(mlp, varstr);
+    }
+#endif
+
+    MLTestHead(mlp, "List", &nfunctions);
+    MathStringList expr;
+    expr.list.resize(nfunctions);
+    for (int i=0; i<nfunctions; ++i)
+      expr.get_str(mlp, i);
+    std::unique_ptr<unsigned[]> expr_len(new unsigned[nfunctions]);
+    for (int i=0; i<nfunctions; ++i)
+      expr_len[i] = std::strlen(expr.list[i]);
+
+    MLNewPacket(mlp);
+
+    std::vector<std::vector<Instruction>> bytecode(nfunctions);
+    std::vector<MPRational> numbers;
+    std::vector<AnalyticExpression::VarPow> varpows;
+
+    Ret ret = parse_ratexpr_list(nparsin, vars_prefix, 0, //vars_list.data(),
+                                 expr.list.data(),
+                                 expr_len.get(),
+                                 nfunctions,
+                                 bytecode,
+                                 numbers,
+                                 varpows);
+    expr.clear();
+
+    if (ret != SUCCESS || !session.graph_exists(graphid)
+        || inputnodes.size() != 1) {
+      MLPutSymbol(mlp, "$Failed");
+      return LIBRARY_NO_ERROR;
+    }
+
+    Graph * graph = session.graph(graphid);
+
+    alg.init(nparsin, std::move(bytecode), std::move(numbers),
+             std::move(varpows), *data);
     unsigned id = graph->new_node(std::move(algptr), std::move(data),
                                   inputnodes.data());
 
@@ -4572,7 +5234,6 @@ extern "C" {
   int fflowml_alg_cached_subgraph(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -4629,7 +5290,6 @@ extern "C" {
   int fflowml_alg_cached_from_subgraph(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int nargs;
     MLNewPacket(mlp);
@@ -4676,7 +5336,6 @@ extern "C" {
   int fflowml_alg_cached_subgraph_merge(WolframLibraryData libData, MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int id, nodeid, nargs;
     MLNewPacket(mlp);
@@ -4728,7 +5387,6 @@ extern "C" {
                                                         MLINK mlp)
   {
     (void)(libData);
-    FFLOWML_SET_DBGPRINT();
 
     int id, nodeid, nargs, cachesize;
     MLNewPacket(mlp);
@@ -4755,6 +5413,147 @@ extern "C" {
       MLPutSymbol(mlp, "$Failed");
 
     }
+
+    return LIBRARY_NO_ERROR;
+  }
+
+  int fflowml_alg_evalcount(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int n_args;
+    MLNewPacket(mlp);
+    MLTestHead( mlp, "List", &n_args);
+
+    int graphid;
+    std::vector<unsigned> inputnodes;
+    MLGetInteger32(mlp, &graphid);
+    get_input_nodes(mlp, inputnodes);
+
+    MLNewPacket(mlp);
+
+    Node * node = nullptr;
+    if (inputnodes.size() != 1 ||
+        !(node = session.node(graphid, inputnodes[0]))) {
+      if (inputnodes.size() != 1)
+        logerr("EvalCount must take exactly one node as input");
+      else
+        logerr("Input node does not exist");
+      MLPutSymbol(mlp, "$Failed");
+      return LIBRARY_NO_ERROR;
+    }
+
+    unsigned nparsin = node->algorithm()->nparsout;
+    std::unique_ptr<EvalCount> algptr(new EvalCount());
+    EvalCount & alg = *algptr;
+    alg.init(nparsin);
+
+    Graph * graph = session.graph(graphid);
+    unsigned id = graph->new_node(std::move(algptr), nullptr,
+                                  inputnodes.data());
+
+    if (id == ALG_NO_ID) {
+      MLPutSymbol(mlp, "$Failed");
+    } else {
+      MLPutInteger32(mlp, id);
+    }
+
+    return LIBRARY_NO_ERROR;
+  }
+
+  int fflowml_alg_evalcount_getset(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int nargs;
+    MLNewPacket(mlp);
+    MLTestHead( mlp, "List", &nargs);
+
+    int id, nodeid;
+    mlint64 reset;
+    MLGetInteger32(mlp, &id);
+    MLGetInteger32(mlp, &nodeid);
+    MLGetInteger64(mlp, &reset);
+    MLNewPacket(mlp);
+
+    Algorithm * alg = session.algorithm(id, nodeid);
+
+    if (!session.graph_exists(id)) {
+      MLPutSymbol(mlp, "$Failed");
+      return LIBRARY_NO_ERROR;
+    }
+
+    if (dynamic_cast<EvalCount*>(alg)) {
+      EvalCount & c = *static_cast<EvalCount*>(alg);
+      std::size_t res;
+      if (reset < 0)
+        res = c.getCount();
+      else
+        res = c.resetCount(reset);
+      MLPutInteger64(mlp, res);
+
+    } else {
+      logerr("Algorithm is not of type EvalCount");
+      MLPutSymbol(mlp, "$Failed");
+    }
+
+    return LIBRARY_NO_ERROR;
+  }
+
+
+  int fflowml_sls_optimize_zero_vars(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int id, nodeid, nargs;
+    MLNewPacket(mlp);
+
+    MLTestHead( mlp, "List", &nargs);
+    MLGetInteger32(mlp, &id);
+    MLGetInteger32(mlp, &nodeid);
+    Ret ret = FAILED;
+
+    Algorithm * alg = session.algorithm(id, nodeid);
+    if (dynamic_cast<SparseLinearSolver *>(alg)) {
+      SparseLinearSolver & ls = *static_cast<SparseLinearSolver *>(alg);
+      ret = ls.optimize_zero_vars();
+      session.invalidate_subctxt_alg_data(id, nodeid);
+    }
+
+    MLNewPacket(mlp);
+
+    if (ret == SUCCESS)
+      MLPutSymbol(mlp, "Null");
+    else
+      MLPutSymbol(mlp, "$Failed");
+
+    return LIBRARY_NO_ERROR;
+  }
+
+  int fflowml_sls_is_optimizing_zero_vars(WolframLibraryData libData, MLINK mlp)
+  {
+    (void)(libData);
+
+    int id, nodeid, nargs;
+    MLNewPacket(mlp);
+
+    MLTestHead( mlp, "List", &nargs);
+    MLGetInteger32(mlp, &id);
+    MLGetInteger32(mlp, &nodeid);
+    Ret ret = FAILED;
+
+    Algorithm * alg = session.algorithm(id, nodeid);
+    if (dynamic_cast<const SparseLinearSolver *>(alg)) {
+      const SparseLinearSolver & ls = *static_cast<SparseLinearSolver *>(alg);
+      ret = ls.is_optimizing_zero_vars();
+    }
+
+    if (ret == FAILED)
+      MLPutSymbol(mlp, "$Failed");
+    else if (ret)
+      MLPutSymbol(mlp, "True");
+    else
+      MLPutSymbol(mlp, "False");
 
     return LIBRARY_NO_ERROR;
   }

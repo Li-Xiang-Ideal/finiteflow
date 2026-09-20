@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <gmp.h>
 #include <fflow/common.hh>
+#include <fflow/gmp_compat.hh>
 
 namespace fflow {
 
@@ -29,7 +30,7 @@ namespace fflow {
 
     explicit MPInt(UInt n)
     {
-      flint_mpz_init_set_ui(z_, n);
+      detail::mpz_init_set_u64(z_, n);
     }
 
     explicit MPInt(const char * str, unsigned base = 10)
@@ -56,7 +57,7 @@ namespace fflow {
 
     MPInt & operator= (UInt n)
     {
-      flint_mpz_set_ui(z_, n);
+      detail::mpz_set_u64(z_, n);
       return *this;
     }
 
@@ -73,12 +74,12 @@ namespace fflow {
 
     Int to_int() const
     {
-      return flint_mpz_get_si(z_);
+      return detail::mpz_get_i64(z_);
     }
 
     UInt to_uint() const
     {
-      return flint_mpz_get_ui(z_);
+      return detail::mpz_get_u64(z_);
     }
 
     mpz_t & get()
@@ -98,7 +99,7 @@ namespace fflow {
 
     int cmp(UInt oth) const
     {
-      return flint_mpz_cmp_ui(z_, oth);
+      return detail::mpz_cmp_u64(z_, oth);
     }
 
     int sign() const
@@ -148,14 +149,16 @@ namespace fflow {
     explicit MPRational(Int num, Int den=1)
     {
       mpq_init(q_);
-      mpq_set_si(q_, num, den);
+      detail::mpz_set_i64(mpq_numref(q_), num);
+      detail::mpz_set_i64(mpq_denref(q_), den);
       canonicalize();
     }
 
     explicit MPRational(const Rational & q)
     {
       mpq_init(q_);
-      mpq_set_si(q_, q.num, q.den);
+      detail::mpz_set_i64(mpq_numref(q_), q.num);
+      detail::mpz_set_i64(mpq_denref(q_), q.den);
       canonicalize();
     }
 
@@ -185,14 +188,16 @@ namespace fflow {
 
     MPRational & operator =(const Rational & q)
     {
-      mpq_set_si(q_, q.num, q.den);
+      detail::mpz_set_i64(mpq_numref(q_), q.num);
+      detail::mpz_set_i64(mpq_denref(q_), q.den);
       canonicalize();
       return *this;
     }
 
     MPRational & operator =(Int z)
     {
-      mpq_set_si(q_, z, 1);
+      detail::mpz_set_i64(mpq_numref(q_), z);
+      mpz_set_ui(mpq_denref(q_), 1);
       canonicalize();
       return *this;
     }
@@ -249,13 +254,13 @@ namespace fflow {
 
     int cmp(Int num, Int den=1) const
     {
-      return mpq_cmp_si(q_, num, den);
+      const MPRational other(num, den);
+      return mpq_cmp(q_, other.get());
     }
 
     int cmp(const Rational & q) const
     {
-      Int num = q.num, den = q.den;
-      return mpq_cmp_si(q_, num, den);
+      return cmp(q.num, q.den);
     }
 
     int sign() const
@@ -265,8 +270,8 @@ namespace fflow {
 
     void to_int(Int & num, Int & den) const
     {
-      num = flint_mpz_get_si(mpq_numref(q_));
-      den = flint_mpz_get_si(mpq_denref(q_));
+      num = detail::mpz_get_i64(mpq_numref(q_));
+      den = detail::mpz_get_i64(mpq_denref(q_));
     }
 
     bool operator== (const MPRational & oth) const

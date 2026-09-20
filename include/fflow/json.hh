@@ -42,6 +42,23 @@ namespace fflow {
                               const unsigned * list,
                               unsigned len);
 
+  Ret json_write_sparse_eqs(const char * filename,
+                            const MPReconstructedRatFun * fun,
+                            unsigned n_funs,
+                            unsigned n_params,
+                            unsigned n_eqs,
+                            const unsigned * eqs_len,
+                            const unsigned * eqs_nonzero_vars,
+                            const std::size_t * eqs_nonzero_coeffs);
+
+  Ret json_write_sparse_system(const char * filename,
+                               unsigned n_eqs, unsigned n_vars,
+                               unsigned n_params,
+                               const unsigned * needed_vars,
+                               unsigned n_needed_vars,
+                               const char * const * eq_json_files,
+                               unsigned n_files);
+
 } // namespace fflow
 
 #endif // FFLOW_JSON_HH

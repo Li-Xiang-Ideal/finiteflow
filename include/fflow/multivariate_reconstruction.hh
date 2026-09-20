@@ -8,7 +8,6 @@
 #include <fflow/univariate_reconstruction.hh>
 #include <fflow/multivariate_reconstruction_details.hh>
 #include <fflow/function_cache.hh>
-#include <flint/flint.h>
 
 namespace fflow {
 
@@ -76,7 +75,7 @@ namespace fflow {
     enum {DEFAULT_N_UCHECKS = 2};
     enum {DEFAULT_N_CHECKS = 2};
     enum {DEFAULT_N_SINGULAR = 10};
-    enum {DEFAULT_MAX_DEG = 100};
+    enum {DEFAULT_MAX_DEG = 1000};
 
     explicit MPolyReconstruction(unsigned nvars,
                                  unsigned maxdegree = DEFAULT_MAX_DEG)
@@ -290,7 +289,7 @@ namespace fflow {
     enum {DEFAULT_N_UCHECKS = 3};
     enum {DEFAULT_N_CHECKS = 2};
     enum {DEFAULT_N_SINGULAR = 3};
-    enum {DEFAULT_MAX_DEG = 100};
+    enum {DEFAULT_MAX_DEG = MPolyReconstruction::DEFAULT_MAX_DEG};
 
     static bool VERBOSE;
 

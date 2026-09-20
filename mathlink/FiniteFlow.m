@@ -3,6 +3,9 @@
 BeginPackage["FiniteFlow`"]
 
 
+$FFVersion::usage = "$FFVersion is the major version of FiniteFlow (see also $FFVersionMinor)."
+$FFVersionMinor::usage = "$FFVersionMinor is the minor version of FiniteFlow (see also $FFVersion)."
+
 FFInt64Max::usage = "Maximum 64-bit integer."
 
 FFLoadLib::usage = "FFLoadLib[] (re)loads the finiteflow library."
@@ -26,6 +29,7 @@ FFFunDeg::usage = "FFFunDeg[numdeg,dendeg] represents a generic rational functio
 FFNewGraph::usage = "FFNewGraph[graphname] defines a new graph with name graphname.
 FFNewGraph[graphname,inputnode,vars] is equivalent to FFNewGraph[graphname] followed by FFGraphInputVars[graphname,inputnode,vars]."
 FFNewDummyGraph::usage = "FFNewDummyGraph[graphname,nparsin,nparsout] defines a dummy graph with nparsin input variables and nparsout output elements.  This graph cannot be evaluated but it can be used for functional reconstruction from stored evalutions."
+FFGraphInputNode::usage = "FFGraphInputNode[graph] returns the id of the input node of the specified graph."
 FFDeleteGraph::usage = "FFDeleteGraph[graphname] deletes the graph with name graphname."
 FFDeleteNode::usage = "FFDeleteNode[graph,node] deletes the specified node from a graph."
 FFGraphInputVars::usage = "FFGraphInputVars[graph,nodename,vars] creates an input node representing the list of input variables vars.  Only the length of vars is relevant, and the names of the variables are not stored."
@@ -37,6 +41,7 @@ FFAlgDenseSolver::usage = "FFAlgDenseSolver[graph,node,{input},params,eqs,vars] 
 FFAlgSparseSolver::usage = "FFAlgSparseSolver[graph,node,{input},params,eqs,vars] defines a sparse linear solver returning the solution of the equations eqs in the variables vars as function of the free input parameters params."
 FFAlgNodeDenseSolver::usage = "FFAlgNodeDenseSolver[graph,node,{input},neqs,vars] defines a dense linear solver returning the solution of the equations A[[i,1]] vars[[1]] + A[[i,2]] vars[[2]] + ... == b[[i]] in the variables vars, for i=1,...,neqs, where the entries returned by the input node are interpreted as the elements of the matrix (A b) in row-major order."
 FFAlgNodeSparseSolver::usage = "FFAlgNodeSparseSolver[graph,node,{input},columns,vars] defines a sparse linear solver returning the solution of the equations A[[i,1]] vars[[1]] + A[[i,2]] vars[[2]] + ... == b[[i]] in the variables vars, for i=1,...,neqs=Length[columns].  The entries returned by the input node are interpreted as the non-vanishing elements of the matrix (A b) in row-major order and columns is a list of lists, namely columns[[i]] contains the indexes of the non-vanishing columns of the i-th row of such matrix."
+FFAlgSparseSolverEx::usage = "FFAlgSparseSolverEx[graph,node,{paramsinput,weights1,weights2,...},params,{{w11,w12,...},{w21,w22,...},...},eqs,vars] defines a sparse linear solver (see FFAlgSparseSolver) where the rational coefficients of the matrix (A|b) defining the system (A.vars==b) are rational functions of params and homogeneous linear functions of the weights, where the latter are obtained from additional input nodes."
 FFAlgSubgraphFit::usage = "FFAlgSubgraphFit[graph,node,{input},subgraph,vars,coeffs] is a subgraph algorithm which returns the solution for the coefficients coeffs, as functions of the input parameters, solving the linear fit problem coeffs[[1]] f[[1]] + coeffs[[2]] f[[2]] + ... + coeffs[[n-1]] f[[n-1]] == f[[n]], where f is the output list of subgraph, evaluated as a function of the list of variables vars concatenated with the input parameters represented by the input node.
 FFAlgSubgraphFit[graph,node,{},subgraph,vars,coeffs] is a subgraph algorithm which returns the numerical solution for the coefficients coeffs, solving the linear fit problem coeffs[[1]] f[[1]] + coeffs[[2]] f[[2]] + ... + coeffs[[n-1]] f[[n-1]] == f[[n]], where f is the output list of subgraph, evaluated as a function of the variables vars."
 FFAlgSubgraphReconstruct::usage = "FFAlgSubgraphReconstruct[graph,node,{input},subgraph,vars] reconstructs the output of subgraph as a list of functions of the variables vars and returns the coefficients of their monomials as functions of the input parameters.  The input of subgraph is the list of variables vars concatenated with the input parameters represented by the input node."
@@ -47,10 +52,13 @@ FFAlgDebug::usage = "FFAlgDebug[] shows a list of graphs and nodes defined in Ma
 FFAllAlgs::usage = "FFAllAlgs[] returns a list with all the algorithms in all the current graphs."
 (*FFClearAlgs::usage = ""*)
 FFAlgQ::usage = "FFAlgQ[graphname, nodename] returns True if the specified algorithm exists."
-FFSolverResetNeededVars::usage = "FFSolverResetNeededVars[graph, node, vars, neededvars] redefines the set of needed variables of a dense or sparse linear system."
+FFSolverNEqsNVars::usage = "FFSolverNEqsNVars[graph,node] returns a length-2 list with the number of equations and variables which defined the linear system represented by the specified node."
+FFSolverResetNeededVars::usage = "FFSolverResetNeededVars[graph, node, vars, neededvars] redefines the set of needed variables of a dense or sparse linear system.  This new set must be a subset of the previously specified needed variables (as an exception, if MaxCol is not specified, any independent variable appearing in the current solution can also be added to this set)."
 FFSolverOnlyHomogeneous::usage =  "FFSolverOnlyHomogeneous[graph, node] makes a linear solver return only the homogeneous part of its solution, i.e. without including the constant terms in the output."
+FFSolverOnlyNonHomogeneous::usage =  "FFSolverOnlyNonHomogeneous[graph, node] makes a linear solver return only the non-homogeneous part of its solution and sets to zero all the independent variables (useful if only one solution of the system is needed, rather than the full space of solutions).  For sparse systems this also activates the optimization which eliminates zero variables (as if calling FFSparseSolverOptimizeZeroVars)."
 FFSolverSparseOutput::usage = "FFSolverSparseOutput[graph, node] makes a sparse linear solver return a sparse representation of the solution matrix."
-FFSolverSparseOutputWithMaxRow::usage = ""
+FFSolverSparseOutputWithMaxCol::usage = "FFSolverSparseOutputWithMaxCol[graph, node, maxcol] is equivalent to FFSolverSparseOutput[graph, node] but also specifies that only the first `maxcol` unknowns of the system (corresponding to the first `maxcol` columns of its matrix representation) are substituted during Gauss elimination.  See also the available Options to further control its behaviour."
+FFSolverEqWeight::usage = "FFSolverEqWeight[graph,node,eqweight] sets the weight of the equations of a sparse solver, as a list of signed integers."
 FFLearn::usage = "FFLearn[graph], executes the learning phase on the output node of graph."
 FFSetLearningOptions::usage = "FFLearn[graph,node,options...] sets the learning options of the specified node in the graph."
 FFLaurentLearn::usage = "FFLaurentLearn[graph] executes the learning phase on a Laurent expansion node, which must be the output node of graph.  It returns a list of two lists.  The first contains the starting power of the Laurent expansion of each element.  The second contains the order of the expansion requested for each element."
@@ -58,6 +66,7 @@ FFDenseSolverLearn::usage = "FFDenseSolverLearn[graph,vars] executes the learnin
 FFSparseSolverLearn::usage = "FFSparseSolverLearn[graph,vars] executes the learning phase on a sparse solver, with unknowns vars, which must be the output node of graph."
 FFDenseSolverGetInfo::usage = "FFDenseSolverGetInfo[graph,node,vars] returns the info about a dense solver or a linear fit, with unknowns vars, obtained during the learning step, namely dependent variables, independent variables and zero variables."
 FFSparseSolverGetInfo::usage = "FFSparseSolverGetInfo[graph,node,vars] returns the info on a sparse solver, with unknowns vars, obtained during the learning step, namely dependent variables, independent variables and zero variables."
+FFSolverZeroVars::usage = "FFSolverZeroVars[graph,node,vars] retuns the subset of the unknowns vars which are found to be zero in a solver."
 FFNonZeroesLearn::usage = "FFNonZeroesLearn[graph] executes the learning phase on a NonZero algorithm, which must be the output node of graph."
 FFNonZeroesGetInfo::usage = "FFNonZeroesGetInfo[graph,ndode] returns the info on a NonZero algorithm obtained during the learning step."
 FFMultiFitLearn::usage = "FFMultiFitLearn[graph,coefficients] executes the learning phase on a multi-fit subgraph algorithm, which must be the output node of graph."
@@ -94,6 +103,9 @@ FFAlgSparseMatMul::usage = "FFAlgSparseMatMul[graph,node,{input1,input2},r1,c1,c
 FFAlgNonZeroes::usage = "FFAlgNonZeroes[graph,node,{input}] returns the non-vanishing elements of its input."
 FFAlgTakeAndAdd::usage="FFAlgTakeAndAdd[graph,node,inputs,takeelements] is a TakeAndAdd algorithm which takes lists of selected elements from its inputs, according to the takeelements pattern, and adds all elements in each list."
 FFAlgTakeAndAddBL::usage="FFAlgTakeAndAddBL[graph,node,inputs,takeelements] is similar to FFAlgTakeAndAdd but is bilinear."
+FFAlgEvalCount::usage = "FFAlgEvalCount[graph,node,{input}] is an algorithm that simply returns its input but keeps a count of how many times it is evaluated (see also FFEvalCountGet and FFEvalCountReset)."
+FFEvalCountGet::usage = "FFEvalCountGet[graph,node], where node is an EvalCount algorithm, returns its current evaluation count."
+FFEvalCountReset::usage = "FFEvalCountReset[graph,node], where node is an EvalCount algorithm, returns its current evaluation count and resets it to zero. FFEvalCountReset[graph,node,count] is analogous but resets the counter to the value `count`."
 FFTotalDegrees::usage="FFTotalDegrees[graph] computes and returns the total degrees of each entry of the output of a graph."
 FFVarsDegrees::usage="FFVarsDegrees[graph] computes and internally stores the degrees with respect to each variable, for all the outputs of a graph."
 FFAllDegrees::usage="FFAllDegrees[graph] computes the total degrees, as well as the partial degrees with respect to each variable, for all the outputs of a graph.  The total degrees are also returned."
@@ -104,7 +116,13 @@ FFReconstructFromCurrentEvaluationsMod::usage="FFReconstructFromCurrentEvaluatio
 FFMissingPoints::usage = "Returned when there are not enough sample points for reconstructing a function on a given prime field."
 FFMissingPrimes::usage = "Returned when sample points from additional prime fields are needed for reconstructing a function."
 
-FFRegisterAlgorithm::usage = "Low level interface for implementing new native algorithms."
+FFRegisterAlgorithm::usage = "Low level interface for implementing new native algorithms. \
+FFRegisterAlgorithm[RegisterFunction,graph,node,{input1,input2,...},{extraargs,...}] is used to register a new node.  \
+This function will call RegisterFunction[graphid,{input1id, input2id,...},{extraargs,...}] where the *id variables are the integer ids corresponding to the graph and input nodes.  \
+The function RegisterFunction must return the integer ID of the newly created node, generally found by calling a C function interfaced to Mathematica.
+"
+FFGraphCId::usage = "FFGraphCId[graph] returns the integer ID that identifies the graph in the C/C++ code.  It can be useful for interacting with custom native extensions."
+FFNodeCId::usage = "FFNodeCId[graph,node] returns the integer ID that identifies the node in its graph in the C/C++ code.  It can be useful for interacting with custom native extensions."
 
 FFSparseEqsToJSON::usage="FFSparseEqsToJSON[outputfilename,params,eqs,vars,pattern,position] serializes the equations eqs in the variables vars, and depending of the free parameters params, in JSON format."
 FFSparseSystemToJSON::usage="FFSparseSystemToJSON[outputfilename,neqs,vars,pars,filelist] creates a JSON file with the information about a sparse system of equations in the variables vars, and depending of the free parameters params, which have been serialized in JSON format in the files of the list filelist.  These JSON files can be created using FFSparseEqsToJSON."
@@ -121,6 +139,8 @@ FFAlgLinearFit::usage = "FFAlgLinearFit[graph,node,{input},params,ansatz, rhs, v
 
 FFAlgLaurent::usage = "FFAlgLaurent[graph,node,{input},subgraph,order] defines a subgraph node which computes the coefficients of the Laurent expansion of the output of subgraph around x=0, where x is the first input variable of subgraph.  If order is an integer, the expansion is truncated at x^order for all output elements.  If order is a list, the expansion of the i-th output element is truncated at x^order[[i]]."
 FFLaurentSol::usage = "FFLaurentSol[expr,x,learninfo] formats the output of a Laurent expansion node as series expansion in x, using the information learninfo returned by FFLearn."
+
+FFTakeUnique::usage = "FFTakeUnique[graph,node,{input}] defines a node which returns the subset of unique elements in input.  These are identified via numerical evaluations (their number can be changed with the option \"NEvals\"->nevals).  This function returns a list of integers such that input == output[[integers]], where input/output is the input/output of the new node."
 
 FFReconstructFunction::usage = "FFReconstructFunction[graph,vars] analytically reconstructs the output of graph as a rational function in the variables vars, by performing several numerical evaluations and reconstructing analytic expressions from these.  Note that for univariate functions, multi-threading is not used during the evaluation of the graph (for that, FFParallelReconstructUnivariate can be used)."
 FFParallelReconstructUnivariate::usage = "FFParallelReconstructUnivariate[graph,{x}] reconstructs the output of graph as a univariate rational function in the variable x.  Numerical evaluations are performed in parallel, and additional sample points are added until the reconstruction is successful."
@@ -146,6 +166,7 @@ FFGraphPrune::usage = "FFGraphPrune[graph] deletes all the nodes of graph which 
 
 FFDumpDegrees::usage="FFDumpDegrees[graph,outputfilename] serializes the information on the total and partial degrees of the output of graph.  It must be called after FFAllDegrees."
 FFLoadDegrees::usage="FFDumpDegrees[graph,filename] loads the information on total and partial degrees of graph, as stored in the file filename."
+FFSetDegrees::usage = "FFSetDegrees[gid,degdata] manually sets the degrees of a graph."
 FFDumpSamplePoints::usage="FFDumpSamplePoints[graph,outputfilename] serializes a list of sample points, i.e. a list of inputs at which graph needs to be evaluated in order to reconstruct the analytic expression of its output."
 FFDumpEvaluations::usage="FFDumpEvaluations[graph,outputfilename] serializes the currently stored evaluations of graph."
 FFLoadEvaluations::usage="FFLoadEvaluations[graph,filelist] loads the evaluations of graph serialized in the files listed in filelist."
@@ -157,21 +178,29 @@ FFSampleFromPoints[graph,filename,nthreads] is equivalent to FFSampleFromPoints[
 FFSampleFromPoints[graph,filename,start,npoints] evaluates the graph at a contiguous subset of npoints sample points, taken from the ones stored in filename, starting from the one at position start (counting from zero).  The evaluations are parallelized over an automatically chosen number of threads.
 FFSampleFromPoints[graph,filename,start,npoints,nthreads] is equivalent to FFSampleFromPoints[graph,filename,start,npoints], but the evaluations are parallelized over nthreads threads."
 FFNSamplePoints::usage = "FFNSamplePoints[graph] returns a list of length two.  The first element is the total number of sample points needed for recostructing the full output of graph.  The second element is a list of integers representing the number of sample points needed for the reconstruction of each element of the output of graph."
+FFParallelReconstructDegreeData::usage = "FFParallelReconstructDegreeData[graph] reconstructs degree data parallelizing univariate reconstructions."
 
 FFGraphEvaluate::usage="FFGraphEvaluate[graph,point] evaluates graph at point, where point is a list of integers.  The prime field may be changed passing the option \"PrimeNo\"."
 FFGraphEvaluateMany::usage="FFGraphEvaluateMany[graph,points] evaluates graph at the specified list of points.  The prime field may be changed globally using the option \"PrimeNo\", or individually for each point by appending an additional entry with the index of the prime to be used.  By default, evaluations are performed in parallel."
 FFPrimeNo::usage="FFPrimeNo[i] with i>=0 returns the i-th hardcoded prime used by finiteflow."
 FFMulInv::usage="FFMulInv[z,p] returns the multiplicative inverse of the integer z module a prime p."
+FFNAvailablePrimes::usage = "FFNAvailablePrimes[] returns the number of primes available in FiniteFlow, i.e. the maximum allowed argument for FFPrimeNo."
 FFRatMod::usage="FFRatMod[z,p] returns z mod p, where z is a rational number and p is a prime."
 
 FFRatRec::usage="FFRatRec[a,n], where a and n are integers, returns a rational q such that q mod n = a, computed using Wang's rational reconstruction algorithm.
 FFRatRec[{a1,a2,...},n] is equivalent to {FFRatRec[a1],n],FFRatRec[a2],n],...}."
+FFParallelRatRec::usage = "FFParallelRatRec[{a1,a2,...},n] where a1,a2,... and n are integers, is equivalent to FFRatRec[{a1,a2,...},n] but performs the reconstructions in parallel."
+
+FFPeekNewNodeId::usage = "FFPeekNewNodeId[graph] returns the unique integer id that would internally be assigned to a new node of the graph, if defined immediately after this function call.  It can be used to assign unique identifiers to nodes before their creation."
+FFSparseSolverOptimizeZeroVars::usage = "FFSparseSolverOptimizeZeroVars[graph,node] makes the sparse solver in the specified node optimize away zero variables from the linear system, during the learning stage.\n\nNote that this optimization makes FFSolverNIndepEqs and FFSolverIndepEqs return the number and the list of equations which are independent after removing zero unknonws from the system."
+FFSparseSolverIsOptimizingZeroVars::usage = "FFSparseSolverIsOptimizingZeroVars[graph,node] checks whether the node of a sparse linear system is using the optimization which removes zero variables (see also FFSparseSolverOptimizeZeroVars)."
 
 
 FF::badrational = "Argument `1` is not a rational number."
 FF::badfun = "Argument is not a polynomial or a rational function in the specified variables `1` with rational coefficients."
 FF::badfunarg = "Argument `1` is not a polynomial or a rational function in the specified variables `2` with rational coefficients."
 FF::badfuncoeff = "Argument `1` is not a polynomial or a rational function in the specified variables `2` with the specified coefficients."
+FF::badpolycoeff = "Polynomial coefficient `1` is not valid."
 FF::badvars = "`1` is not a non-empty list of variables."
 FF::badsystem = "Argument is not a list of equalities."
 FF::badbooleanflag = "The option `1` must be True, False or Automatic."
@@ -182,6 +211,7 @@ FF::noint32 = "`1` is not an integer in the 32-bit range."
 FF::noint32list = "`1` is not a list of integers in the 32-bit range."
 FF::nouint32list = "`1` is not a list of positive integers in the 32-bit range."
 FF::noint64 = "`1` is not an integer in the 64-bit range."
+FF::nouint64 = "`1` is not a positive integer in the 64-bit range."
 FF::noint64list = "`1` is not a list of integers in the 64-bit range."
 FF::nolib = "fflow library cannot be loaded: try setting your $LibraryPath, and then call FFLoadLib[]."
 FF::badsquaremat = "The input is not a square matrix."
@@ -190,13 +220,27 @@ FF::badvarule = "Invalid variable on l.h.s. of substitution rule."
 FF::noregfun = "No registered function with identifier `1`."
 FF::badregfunvars = "The registered expression `1` depends on `2` variables, but `3` are required."
 FF::badpattern = "Variables `1` match the variables pattern but they are not in the list of unknowns."
+FF::badtakepattern = "Invalid take pattern."
+FF::badsysweights = "Weights must of a list of lists."
+FF::badsysautoweights = "Automatic weights require both \"WeightIdx\" and \"WeightPattern\" options to be set."
+FF::badweqpattern = "Equations non-homogeneous in the weights or invalid weight pattern."
+FF::badwnodelen = "Input nodes for weights do not have the expected length"
 
 FF::noalg = "No algorithm with identifier `1`."
 FF::nograph = "No graph with identifier `1`."
 FF::badalgvars = "The algorithm `1` depends on `2` variables, but `3` are required."
 FF::badneededvars = "Needed variables should be a subset of the unknowns."
 
+FF::badinputdim = "The input has invalid dimensions."
+FF::coloutofbounds = "Column indexes are out of bounds"
+
+FF::baddegdata = "Unexpected number of elements in degree data"
+
 FF::nonratsub = "Found invalid subexpression `1`"
+
+FF::noinputnode = "Graph `1` has no input node."
+
+FF::logerr = "`1`"
 
 
 Begin["`Private`"]
@@ -216,6 +260,10 @@ FFInt64Max = 2^63-1;
 Protect[FFInt64Max];
 
 
+(* Called by error messages from the C++ side *)
+LogErr = Message[FF::logerr,#]&;
+
+
 FFRationalQ[x_Rational] := True;
 FFRationalQ[x_Integer] := True;
 FFRationalQ[x_] := False;
@@ -225,6 +273,7 @@ CheckedInt[a_] := If[IntegerQ[a], a, Message[FF::noint, a]; Throw[$Failed]];
 CheckedInt32[a_] := If[IntegerQ[a] && (Abs[a]<=FFInt32Max), a, Message[FF::noint, a]; Throw[$Failed]];
 CheckedInt32Range[a_] := If[Abs[a]<=FFInt32Max, a, Message[FF::noint32, a]; Throw[$Failed]];
 CheckedInt64[a_] := If[IntegerQ[a] && (Abs[a]<=FFInt64Max), a, Message[FF::noint, a]; Throw[$Failed]];
+CheckedUInt64[a_] := If[IntegerQ[a] && (0<=a<=FFInt64Max), a, Message[FF::nouint64, a]; Throw[$Failed]];
 CheckedInt64Range[a_] := If[Abs[a]<=FFInt64Max, a, Message[FF::noint64, a]; Throw[$Failed]];
 
 Int32ListError[a_] := (Message[FF::noint32list, a]; Throw[$Failed]);
@@ -240,7 +289,7 @@ CheckedInt64List[a_] := Int64ListError[a];
 CheckedInt64List[a_List] := If[TrueQ[And@@((IntegerQ[#] && Abs[#]<=FFInt64Max)&/@a)], a, Int64ListError[a]];
 
 CheckVariables[vars_]:=If[!TrueQ[(vars[[0]] == List) && (Length[vars] > 0)],
-                           Message[FF::badfun, vars]; Throw[$Failed]
+                           Message[FF::badvars, vars]; Throw[$Failed]
 	                   ];
 
 
@@ -258,12 +307,6 @@ PolyCoefficientRules[poly_,vars_] :=  If[AllTrue[#,FFRationalQ[#[[2]]]&],
                                          #,
                                          Message[FF::badfunarg, poly, vars]; Throw[$Failed]
                                        ]&[FFCoefficientRules[poly,vars]];
-
-
-PolyCoefficientRulesCoeffMap[poly_,vars_,map_] :=  If[SubsetQ[Keys[map],(#[[2]]&/@#)],
-                                                    #,
-                                                    Message[FF::badfuncoeff, poly, vars]; Throw[$Failed]
-                                                    ]&[FFCoefficientRules[poly,vars]];
 
 
 LinearEqCoeffs[expr_, vars_, applyfun_] := Module[
@@ -319,12 +362,14 @@ toFFInternalUnsignedFlag[var_, n_Integer]:=If[TrueQ[n>=0], n, Message[FF::baduin
 toFFInternalUnsignedFlag[var_, other_]:=(Message[FF::baduintflag, var]; Throw[$Failed]);
 
 
-toFFInternalPoly[poly_,vars_] := ({#[[1]],ToString[#[[2]],InputForm]})&/@PolyCoefficientRules[poly, vars];
+toFFInternalPoly[poly_,vars_] := Check[({#[[1]],ToString[#[[2]],InputForm]})&/@PolyCoefficientRules[poly, vars],Message[FF::badfun,vars]; Throw[$Failed]];
 toFFInternalRatFun[ratfun_,vars_] := {toFFInternalPoly[Numerator[ratfun],vars],toFFInternalPoly[Denominator[ratfun],vars]};
 toFFInternalRatFun[0,vars_] := {Length[vars]}; (* optimization \[Rule] this represents a vanishing function *)
 
 
-toFFInternalPolyCoeffMap[poly_,vars_,coeffmap_] := ({#[[1]],coeffmap[#[[2]]]})&/@PolyCoefficientRulesCoeffMap[poly, vars, coeffmap];
+checkcmap[i_Integer]:=i;
+checkcmap[i_]:=(Message[FF::badpolycoeff,i[[2]]];Throw[$Failed]);
+toFFInternalPolyCoeffMap[poly_,vars_,coeffmap_] := Check[({#[[1]],checkcmap[coeffmap[#[[2]]]]})&/@FFCoefficientRules[poly, vars],Message[FF::badfun,vars]; Throw[$Failed]];
 toFFInternalRatFunCoeffMap[ratfun_,vars_,coeffmap_] := {toFFInternalPolyCoeffMap[Numerator[ratfun],vars,coeffmap],toFFInternalPolyCoeffMap[Denominator[ratfun],vars,coeffmap]};
 toFFInternalRatFunCoeffMap[0,vars_,coeffmap_] := {Length[vars]}; (* optimization \[Rule] this represents a vanishing function *)
 
@@ -344,7 +389,7 @@ toFFInternalPolyPoly[poly_,tauvars_,params_] := ({#[[1]],toFFInternalPoly[#[[2]]
 toFFInternalPolyRatFun[ratfun_,tauvars_,params_] := {toFFInternalPolyPoly[Numerator[ratfun],tauvars,params],toFFInternalPolyPoly[Denominator[ratfun],tauvars,params]};
 
 
-toFFJSONPoly[poly_,vars_] := ({ToString[#[[2]],InputForm],#[[1]]})&/@PolyCoefficientRules[poly, vars];
+toFFJSONPoly[poly_,vars_] := Check[({ToString[#[[2]],InputForm],#[[1]]})&/@PolyCoefficientRules[poly, vars],Message[FF::badfun,vars]; Throw[$Failed]];
 toFFJSONRatFun[ratfun_,vars_] := {Length[#],#}&/@{toFFJSONPoly[Numerator[ratfun],vars],toFFJSONPoly[Denominator[ratfun],vars]};
 toFFJSONRatFun[0,vars_] := 0;
 
@@ -429,11 +474,25 @@ FFRegisterAlgorithm[algregfun_, gid_, id_, inputs_, args_List]:=Module[
 FFGraphOutput[graphid_,nodeid_]:=Catch[FFGraphSetOutputImplem[GetGraphId[graphid],GetAlgId[graphid,nodeid]]];
 
 
+FFGraphCId[graph_]:=Catch[GetGraphId[graph]];
+FFNodeCId[graph_,node_]:=Catch[GetAlgId[graph,node]];
+
+
+FFGraphInputNode[graphid_]:=Catch[
+  If[!FFGraphQ[graphid], Message[FF::nograph,graphid]; Throw[$Failed];];
+  If[!KeyExistsQ[FFGraphInputs,graphid], Message[FF::noinputnode,graphid]; Throw[$Failed];];
+  FFGraphInputs[graphid]
+];
+
+
 FFNParsOut[gid_]:=Catch[FFGraphNParsOutImplem[GetGraphId[gid]]];
 FFNParsOut[gid_,id_]:=Catch[FFNodeNParsOutImplem[GetGraphId[gid],GetAlgId[gid,id]]];
 
 
 FFMakeMutable[gid_,id_]:=Catch[FFAlgMakeNodeMutableImplem[GetGraphId[gid],GetAlgId[gid,id]]];
+
+
+FFPeekNewNodeId[graph_]:=Catch[FFPeekNewNodeIdImplem[GetGraphId[graph]]];
 
 
 Options[FFGraphEdges]:={"Pruned"->False};
@@ -553,8 +612,8 @@ FFReconstructFromCurrentEvaluationsMod[gid_,vars_, opt:OptionsPattern[]]:=FFReco
 
 
 Options[FFReconstructUnivariate]:=Options[FFAlgorithmSetReconstructionOptions];
-FFReconstructUnivariate[gid_,vars_, opt:OptionsPattern[]]:=Module[
-  {res},
+FFReconstructUnivariate[gid_,{z_}, opt:OptionsPattern[]]:=Module[
+  {res,vars={z}},
   res = FFReconstructUnivariateImplem[GetGraphId[gid], FFAlgorithmSetReconstructionOptions[opt]];
   If[!TrueQ[res[[0]]==List], Return[res]];
   fromFFInternalRatFun[#,vars]&/@res
@@ -562,8 +621,8 @@ FFReconstructUnivariate[gid_,vars_, opt:OptionsPattern[]]:=Module[
 
 
 Options[FFReconstructUnivariateMod]:=Options[FFAlgorithmSetReconstructionOptions];
-FFReconstructUnivariateMod[gid_,vars_, opt:OptionsPattern[]]:=Module[
-  {res},
+FFReconstructUnivariateMod[gid_,{z_}, opt:OptionsPattern[]]:=Module[
+  {res,vars={z}},
   res = FFReconstructUnivariateModImplem[GetGraphId[gid], FFAlgorithmSetReconstructionOptions[opt]];
   If[!TrueQ[res[[0]]==List], Return[res]];
   fromFFInternalRatFun[#,vars]&/@res
@@ -591,6 +650,20 @@ FFDumpEvaluations[gid_,file_String]:=FFDumpEvaluationsImplem[GetGraphId[gid],fil
 FFLoadEvaluations[gid_,files_List]:=If[And@@(StringQ/@files), FFLoadEvaluationsImplem[GetGraphId[gid],files], $Failed];
 FFSamplesFileSize[file_String]:=FFSamplesFileSizeImplem[file];
 FFNParsFromDegreesFile[file_String]:=If[TrueQ[#==$Failed],$Failed,{"NParsIn"->#[[1]],"NParsOut"->#[[2]]}]&[FFNParsFromDegreesFileImpl[file]];
+
+
+FFSetDegrees[gid_,degdata_List]:=Module[{nout,nin,cdata},
+  Catch[
+    nout = FFNParsOut[gid];
+    nin = FFNodeNParsOutImplem[GetGraphId[gid],0];
+    cdata = CheckedUInt32List[Flatten[degdata]];
+    If[!(Length[cdata]===nout*(2 + 4*nin)),
+      Message[FF::baddegdata];
+      Throw[$Failed];
+    ];
+    FFSetDegreesImplem[GetGraphId[gid],cdata];
+  ]
+]
 
 
 RegisterSimpleSubgraph[gid_,inputs_,{subgraphid_}]:=Catch[FFSimpleSubGraphImplem[gid,inputs,GetGraphId[subgraphid]]];
@@ -677,7 +750,7 @@ RegisterNodeSparseSolver[gid_,inputs_,{columns_,vars_,neededvarsin_}]:=Module[
     CheckVariables[neededvars];
     If[!SubsetQ[vars,neededvars], Message[FF::badneededvars]; Throw[$Failed];];
     cols = (CheckedUInt32List/@columns);
-    If[!TrueQ[Max[Union@@cols]<=Length[vars]+1],Throw[$Failed];];
+    If[!TrueQ[Max[Union@@cols]<=Length[vars]+1], Message[FF::coloutofbounds]; Throw[$Failed];];
     FFRegisterNodeSparseSolverImplem[gid,inputs,Length[vars],cols-1,position/@neededvars]
   ]
 ];
@@ -687,35 +760,6 @@ FFAlgNodeSparseSolver[gid_,id_,inputs_List,columns_List,vars_,OptionsPattern[]]:
   FFRegisterAlgorithm[RegisterNodeSparseSolver, gid, id, inputs, {columns, vars, OptionValue["NeededVars"]}]
 ];
 
-
-(*RegisterSparseSolver[gid_,inputs_,{params_,eqsin_,vars_,neededvarsin_,applyfun_}]:=Module[
-  {eqs, neededvars, lincoeffs, dummy, position, tointernal},
-  Catch[
-    position = Association[{}];
-    Table[position[vars[[ii]]]=ii-1;,{ii,Length[vars]}];
-    eqs = Select[eqsin, !TrueQ[#]&];
-    neededvars = If[TrueQ[neededvarsin==Automatic], vars, neededvarsin];
-    CheckVariables[vars];
-    CheckVariables[neededvars];
-    If[!SubsetQ[vars,neededvars], Message[FF::badneededvars]; Throw[$Failed];];
-    If[!TrueQ[eqs[[0]]==List && And@@(((#[[0]] == Equal) && (Length[#] == 2))&/@eqs)],
-        Message[FF::badsystem]; Throw[$Failed];
-    ];
-    eqs = (#[[1]]-#[[2]])&/@eqs;
-    lincoeffs = SparseLinearEqCoeffs[#,vars,applyfun]&/@eqs;
-    If[!TrueQ[params == {}],
-      tointernal[expr_]:=tointernal[expr]=toFFInternalRatFun[expr,params];,
-      tointernal[expr_]:=tointernal[expr]=If[!TrueQ[FFRationalQ[expr]],
-                                             Message[FF::badfunarg, expr, params]; Throw[$Failed],
-                                             ToString[expr,InputForm]];
-    ];
-    lincoeffs = Map[{#[[1]],tointernal/@#[[2]]}&, lincoeffs];
-    If[!TrueQ[params == {}],
-      FFRegisterSparseSolverImplem[gid,inputs,Length[params],Length[vars],lincoeffs,position/@neededvars],
-      FFRegisterSparseSolverImplemN[gid,inputs,Length[vars],lincoeffs,position/@neededvars]
-    ]
-  ]
-];*)
 
 RegisterSparseSolver[gid_,inputs_,{params_,eqsin_,vars_,neededvarsin_,applyfun_}]:=Module[
   {varmap,xx,xvars},
@@ -727,7 +771,7 @@ RegisterSparseSolver[gid_,inputs_,{params_,eqsin_,vars_,neededvarsin_,applyfun_}
 ];
 
 RegisterSparseSolver[gid_,inputs_,{params_,eqsin_,vars_,pattern_,neededvarsin_,applyfun_}]:=Module[
-  {eqs, neededvars, lincoeffs, dummy, position, tointernal},
+  {eqs, neededvars, lincoeffs, dummy, position, tointernal, uniqueccs, uniquemap, ii},
   Catch[
     position = Association[{}];
     Table[position[vars[[ii]]]=ii-1;,{ii,Length[vars]}];
@@ -745,15 +789,20 @@ RegisterSparseSolver[gid_,inputs_,{params_,eqsin_,vars_,pattern_,neededvarsin_,a
         Message[FF::badpattern,#[[2]]&/@Union[Cases[lincoeffs,_Missing,Infinity]]]; Throw[$Failed];
     ];
     If[!TrueQ[params == {}],
-      tointernal[expr_]:=tointernal[expr]=toFFInternalRatFun[expr,params];,
-      tointernal[expr_]:=tointernal[expr]=If[!TrueQ[FFRationalQ[expr]],
-                                             Message[FF::badfunarg, expr, params]; Throw[$Failed],
-                                             ToString[expr,InputForm]];
+      tointernal[expr_]:=toFFInternalRatFun[expr,params];,
+      tointernal[expr_]:=If[!TrueQ[FFRationalQ[expr]],
+                            Message[FF::badfunarg, expr, params]; Throw[$Failed],
+                            ToString[expr,InputForm]];
     ];
-    lincoeffs = Map[{#[[1]],tointernal/@#[[2]]}&, lincoeffs];
+    uniqueccs = DeleteDuplicates[Flatten[lincoeffs[[;;,2]]]];
+    uniquemap = Association[{}];
+    Do[uniquemap[uniqueccs[[ii]]]=ii-1;,{ii,1,Length[uniqueccs]}];
+    uniqueccs = tointernal/@uniqueccs;
+    lincoeffs = Map[{#[[1]],uniquemap/@#[[2]]}&, lincoeffs];
+    Clear[uniquemap];
     If[!TrueQ[params == {}],
-      FFRegisterSparseSolverImplem[gid,inputs,Length[params],Length[vars],lincoeffs,position/@neededvars],
-      FFRegisterSparseSolverImplemN[gid,inputs,Length[vars],lincoeffs,position/@neededvars]
+      FFRegisterSparseSolverImplem[gid,inputs,Length[params],Length[vars],uniqueccs,lincoeffs,position/@neededvars],
+      FFRegisterSparseSolverImplemN[gid,inputs,Length[vars],uniqueccs,lincoeffs,position/@neededvars]
     ]
   ]
 ];
@@ -763,6 +812,85 @@ FFAlgSparseSolver[gid_,id_,inputs_List,params_,eqs_,vars_,OptionsPattern[]]:=Mod
   If[TrueQ[OptionValue["VarsPattern"]==Automatic],
    FFRegisterAlgorithm[RegisterSparseSolver, gid, id, inputs, {params, eqs, vars, OptionValue["NeededVars"], OptionValue["ApplyFunction"]}],
    FFRegisterAlgorithm[RegisterSparseSolver, gid, id, inputs, {params, eqs, vars, OptionValue["VarsPattern"], OptionValue["NeededVars"], OptionValue["ApplyFunction"]}]
+  ]
+];
+
+
+RegisterSparseSolverEx[gid_,inputs_,{params_,weights_,eqsin_,vars_,widx_,wpatt_,neededvarsin_,applyfun_}]:=Module[
+  {varmap,xx,xvars},
+  Catch[
+    xvars = xx/@Range[Length[vars]];
+    varmap = Dispatch[Inner[Rule, vars, xvars, List]];
+    RegisterSparseSolverEx[gid,inputs, {params,weights,eqsin,xvars,widx,wpatt,(Union[Cases[{#},_xx,Infinity]]&),neededvarsin,applyfun}/.varmap]
+  ]
+];
+
+RegisterSparseSolverEx[gid_,inputs_,{params_,weights_,eqsin_,vars_,widxin_,wpattin_,pattern_,neededvarsin_,applyfun_}]:=Module[
+  {eqs, neededvars, lincoeffs, dummy, position, tointernalw, tointernale, tointernal, uniqueccs, uniquemap,
+   ii, jj, widx, wpatt, wsym},
+  Catch[
+    position = Association[{}];
+    Table[position[vars[[ii]]]=ii-1;,{ii,Length[vars]}];
+    eqs = Select[eqsin, !TrueQ[#]&];
+    CheckVariables[params]; (* checks that params is non-empty! *)
+    neededvars = If[TrueQ[neededvarsin==Automatic], vars, neededvarsin];
+    CheckVariables[vars];
+    CheckVariables[neededvars];
+    If[!SubsetQ[vars,neededvars], Message[FF::badneededvars]; Throw[$Failed];];
+    If[!TrueQ[eqs[[0]]==List && And@@(((#[[0]] == Equal) && (Length[#] == 2))&/@eqs)],
+        Message[FF::badsystem]; Throw[$Failed];
+    ];
+    If[weights =!= Automatic && (weights[[0]] =!= List || DeleteDuplicates[weights[[;;,0]]] =!= {List}),
+      Message[FF::badsysweights]; Throw[$Failed];
+    ];
+    If[weights =!= Automatic && Length/@weights =!= (FFNodeNParsOutImplem[gid,#]&/@inputs)[[2;;]],
+      Message[FF::badwnodelen]; Throw[$Failed];
+    ];
+    eqs = (#[[1]]-#[[2]])&/@eqs;
+    
+    widx = widxin;
+    wpatt = wpattin;
+    If[weights === Automatic && (widx === None || wpatt === None),
+      Message[FF::badsysautoweights]; Throw[$Failed];
+    ];
+    If[wpatt === None || widx === None,
+      (* if any of them is None we assume both of them are *)
+      eqs = eqs /. Dispatch[Join@@Table[weights[[ii,jj]]->wsym[{ii,jj}],{ii,Length[weights]},{jj,Length[weights[[ii]]]}]];
+      wpatt = DeleteDuplicates[Cases[{#},_wsym,Infinity]]&;
+      widx = First;
+    ];
+    
+    tointernalw = SparseLinearEqCoeffsWithPattern[#,$Failed,wpatt,widx,applyfun]&;
+    tointernale[eq_] := Module[{tmp},
+      tmp = SparseLinearEqCoeffsWithPattern[eq,Length[vars],pattern,position,Identity];
+      tmp[[2]] = tointernalw/@tmp[[2]];
+      tmp
+    ];
+    lincoeffs = tointernale/@eqs;
+    If[!FreeQ[lincoeffs[[;;,2]],Missing["KeyAbsent",_]],
+        Message[FF::badpattern,#[[2]]&/@Union[Cases[lincoeffs,_Missing,Infinity]]]; Throw[$Failed];
+    ];
+    If[!AllTrue[lincoeffs[[;;,1]], AllTrue[#,(#[[0]]===List && Length[#]==2)]&],
+        Message[FF::badweqpattern]; Throw[$Failed];
+    ];
+    
+    tointernal[expr_]:=toFFInternalRatFun[expr,params];
+    uniqueccs = DeleteDuplicates[Flatten[lincoeffs[[;;,2,;;,2]]]];
+    uniquemap = Association[{}];
+    Do[uniquemap[uniqueccs[[ii]]]=ii-1;,{ii,1,Length[uniqueccs]}];
+    uniqueccs = tointernal/@uniqueccs;
+    lincoeffs[[;;,2,;;,2]] = Map[uniquemap,lincoeffs[[;;,2,;;,2]],{3}];
+    Clear[uniquemap];
+    lincoeffs[[;;,2]] = Map[Inner[Join[#1[[1]]-1,{#2[[1]]}]&,d/@#[[1]],d/@#[[2]],Join,1]&,lincoeffs[[;;,2]],{2}];
+    FFRegisterSparseSolverExImplem[gid,inputs,Length[params],Length[vars],uniqueccs,lincoeffs,position/@neededvars]
+  ]
+];
+
+Options[FFAlgSparseSolverEx]:={"NeededVars"->Automatic, "ApplyFunction"->Identity, "VarsPattern"->Automatic, "WeightIdx"->None, "WeightPattern"->None};
+FFAlgSparseSolverEx[gid_,id_,{varin_,weightnodes__},params_,weights_,eqs_,vars_,OptionsPattern[]]:=Module[{},
+  If[TrueQ[OptionValue["VarsPattern"]==Automatic],
+   FFRegisterAlgorithm[RegisterSparseSolverEx, gid, id, {varin,weightnodes}, {params, weights, eqs, vars, OptionValue["WeightIdx"], OptionValue["WeightPattern"], OptionValue["NeededVars"], OptionValue["ApplyFunction"]}],
+   FFRegisterAlgorithm[RegisterSparseSolverEx, gid, id, {varin,weightnodes}, {params, weights, eqs, vars, OptionValue["WeightIdx"], OptionValue["WeightPattern"], OptionValue["VarsPattern"], OptionValue["NeededVars"], OptionValue["ApplyFunction"]}]
   ]
 ];
 
@@ -789,7 +917,7 @@ FFSerializeSparseEqs[filename_,params_,eqsin_,vars_,pattern_,position_,OptionsPa
 ];
 
 RegisterSparseSerializedEqs[gid_, inputs_, {params_, files_, vars_, neededvarsin_}]:=Module[
-  {needed,position,neededvars,lincoeffs},
+  {needed,position,neededvars,lincoeffs,uniqueccs,uniquemap},
   position = Association[{}];
   Table[position[vars[[ii]]]=ii-1;,{ii,Length[vars]}];
   neededvars = If[TrueQ[neededvarsin==Automatic], vars, neededvarsin];
@@ -797,7 +925,12 @@ RegisterSparseSerializedEqs[gid_, inputs_, {params_, files_, vars_, neededvarsin
   CheckVariables[neededvars];
   If[!SubsetQ[vars,neededvars], Message[FF::badneededvars]; Throw[$Failed];];
   lincoeffs=Join@@(Import/@files);
-  FFRegisterSparseSolverImplem[gid,inputs,Length[params],Length[vars],lincoeffs,position/@neededvars]
+  uniqueccs = DeleteDuplicates[Join@@(lincoeffs[[;;,2]])];
+  uniquemap = Association[{}];
+  Do[uniquemap[uniqueccs[[ii]]]=ii-1;,{ii,1,Length[uniqueccs]}];
+  lincoeffs = Map[{#[[1]],uniquemap/@#[[2]]}&, lincoeffs];
+  Clear[uniquemap];
+  FFRegisterSparseSolverImplem[gid,inputs,Length[params],Length[vars],uniqueccs,lincoeffs,position/@neededvars]
 ];
 
 Options[FFAlgSerializedSparseSolver]:={"NeededVars"->Automatic};
@@ -863,6 +996,7 @@ FFUIntListToJSON[file_,list_]:=Catch[Export[file,{Length[list],CheckedUInt32List
 
 
 FFSolverResetNeededVars[gid_,id_,vars_,needed_]:=Module[{position},
+  If[!SubsetQ[vars,needed], Message[FF::badneededvars]; Return[$Failed];];
   position = Association[{}];
   Table[position[vars[[ii]]]=ii-1;,{ii,Length[vars]}];
   FFSolverResetNeededVarsImplem[GetGraphId[gid],GetAlgId[gid,id],position/@needed]
@@ -880,9 +1014,15 @@ FFListSubsetFromJSON[file_,list_]:=list[[Import[file][[2]]+1]];
 FFSolverOnlyHomogeneous[gid_,id_]:=Catch[FFSolverOnlyHomogeneousImplem[GetGraphId[gid],GetAlgId[gid,id]]];
 
 
+FFSolverOnlyNonHomogeneous[gid_,id_]:=Catch[FFSolverOnlyNonHomogeneousImplem[GetGraphId[gid],GetAlgId[gid,id]]];
+
+
 FFSolverSparseOutput[gid_,id_]:=Catch[FFSolverSparseOutputImplem[GetGraphId[gid],GetAlgId[gid,id]]];
-FFSolverSparseOutputWithMaxRow[gid_,id_,maxrow_]:=Catch[FFSolverSparseOutputWithMaxrowImplem[GetGraphId[gid],GetAlgId[gid,id],CheckedInt32[maxrow],toFFInternalBooleanFlag[0,Automatic]]];
-FFSolverSparseOutputWithMaxRow[gid_,id_,maxrow_,"BackSubstitution"->flag_]:=Catch[FFSolverSparseOutputWithMaxrowImplem[GetGraphId[gid],GetAlgId[gid,id],CheckedInt32[maxrow],toFFInternalBooleanFlag["BackSubstitution",flag]]];
+Options[FFSolverSparseOutputWithMaxCol]={"BackSubstitution"->True,"KeepFullOutput"->False};
+FFSolverSparseOutputWithMaxCol[gid_,id_,maxrow_,OptionsPattern[]]:=Catch[FFSolverSparseOutputWithMaxrowImplem[GetGraphId[gid],GetAlgId[gid,id],CheckedInt32[maxrow],toFFInternalBooleanFlag["BackSubstitution",OptionValue["BackSubstitution"]],toFFInternalBooleanFlag["KeepFullOutput",OptionValue["KeepFullOutput"]]]];
+
+
+FFSolverEqWeight[gid_,id_,eqweight_]:=Catch[FFSolverEqWeightImplem[GetGraphId[gid],GetAlgId[gid,id],CheckedInt32List[eqweight]]];
 
 
 FFLearn[gid_]:=Catch[FFLearnImplem[GetGraphId[gid]]];
@@ -896,8 +1036,8 @@ FFDenseSolverLearn[gid_,vars_]:=Module[
   Catch[
     learn = FFLearnImplem[GetGraphId[gid]];
     If[!TrueQ[learn[[0]]==List], Throw[learn]];
+    If[FFSolverIsImpossibleImplem[GetGraphId[gid]], Return[FFImpossible]];
     {depv,indepv,zerov} = learn;
-    If[Length[depv]==0 && Length[indepv]==0  && Length[zerov]==0, Return[FFImpossible]];
     {"DepVars"->vars[[depv+1]],"IndepVars"->vars[[indepv+1]],"ZeroVars"->vars[[zerov+1]]}
   ]
 ];
@@ -908,8 +1048,8 @@ FFSparseSolverLearn[gid_,vars_]:=Module[
   Catch[
     learn = FFLearnImplem[GetGraphId[gid]];
     If[!TrueQ[learn[[0]]==List], Throw[learn]];
+    If[FFSolverIsImpossibleImplem[GetGraphId[gid]], Return[FFImpossible]];
     {depv,indepv,sparseout} = learn;
-    If[Length[depv]==0 && Length[indepv]==0, Return[FFImpossible]];
     If[!TrueQ[sparseout==1],
       {"DepVars"->vars[[depv+1]],"IndepVars"->vars[[indepv+1]],"SparseOutput"->False},
       varswc=Join[vars,{1}];
@@ -920,6 +1060,7 @@ FFSparseSolverLearn[gid_,vars_]:=Module[
 
 
 ConvertDenseLearn[learn_,vars_]:=Module[{depv,indepv,zerov},
+    If[learn===FFImpossible, Return[FFImpossible]];
     {depv,indepv,zerov} = learn;
     If[Length[depv]==0 && Length[indepv]==0  && Length[zerov]==0, Return[FFImpossible]];
     {"DepVars"->vars[[depv+1]],"IndepVars"->vars[[indepv+1]],"ZeroVars"->vars[[zerov+1]]}
@@ -938,7 +1079,7 @@ FFDenseSolverGetInfo[gid_,id_,vars_]:=Module[
   {depv,indepv,zerov},
   Catch[
     {depv,indepv,zerov} = FFAlgorithmGetInfoImplem[GetGraphId[gid],GetAlgId[gid,id]];
-    If[Length[depv]==0 && Length[indepv]==0  && Length[zerov]==0, Return[FFImpossible]];
+    If[FFSolverIsImpossibleImplem[GetGraphId[gid]], Return[FFImpossible]];
     {"DepVars"->vars[[depv+1]],"IndepVars"->vars[[indepv+1]],"ZeroVars"->vars[[zerov+1]]}
   ]
 ];
@@ -948,7 +1089,7 @@ FFSparseSolverGetInfo[gid_,id_,vars_]:=Module[
   {depv,indepv,sparseout,varswc},
   Catch[
     {depv,indepv,sparseout} = FFAlgorithmGetInfoImplem[GetGraphId[gid],GetAlgId[gid,id]];
-    If[Length[depv]==0 && Length[indepv]==0, Return[FFImpossible]];
+    If[FFSolverIsImpossibleImplem[GetGraphId[gid]], Return[FFImpossible]];
     If[!TrueQ[sparseout==1],
       {"DepVars"->vars[[depv+1]],"IndepVars"->vars[[indepv+1]],"SparseOutput"->False},
       varswc=Join[vars,{1}];
@@ -972,6 +1113,9 @@ FFSubgraphReconstructGetInfo[gid_,id_,vars_]:=Module[
 ];
 
 
+FFSolverNEqsNVars[gid_,id_]:=FFSolverNEqsNVarsImplem[GetGraphId[gid],GetAlgId[gid,id]];
+
+
 FFSolverNIndepEqs[gid_,id_]:=FFSolverNIndepEqsImplem[GetGraphId[gid],GetAlgId[gid,id]];
 
 
@@ -982,6 +1126,9 @@ FFSparseSolverMarkAndSweepEqs[gid_,id_]:=FFSparseSolverMarkAndSweepEqsImplem[Get
 
 
 FFSparseSolverDeleteUnneededEqs[gid_,id_]:=FFSparseSolverDeleteUnneededEqsImplem[GetGraphId[gid],GetAlgId[gid,id]];
+
+
+FFSolverZeroVars[gid_,id_,vars_]:=Catch[If[TrueQ[#[[0]]==List],vars[[#+1]],#]&[FFSolverZeroVarsImplem[GetGraphId[gid],GetAlgId[gid,id]]]];
 
 
 RegisterAlgRatFunEval[gid_,inputs_,{vars_List,functions_}]:=Catch[FFAlgRatFunEvalImplem[gid,inputs,Length[vars],toFFInternalRatFun[#,vars]&/@functions]];
@@ -1010,8 +1157,8 @@ RegisterAlgChain[gid_,inputs_,{}]:=Catch[FFAlgChainImplem[gid,inputs]];
 FFAlgChain[gid_,id_,inputs_List]:=FFRegisterAlgorithm[RegisterAlgChain,gid,id,inputs,{}];
 
 
-ValidateTakeElemsList[a_List,False]:=If[AllTrue[a,#[[0]]==List && Length[#]==2&],a,Throw[$Failed]];
-ValidateTakeElemsList[a_List,True]:=If[AllTrue[a,#[[0]]==List && Length[#]==4&],a,Throw[$Failed]];
+ValidateTakeElemsList[a_List,False]:=If[AllTrue[a,#[[0]]==List && Length[#]==2 && And@@(IntegerQ/@#)&],a,(Message[FF::badtakepattern];Throw[$Failed])];
+ValidateTakeElemsList[a_List,True]:=If[AllTrue[a,#[[0]]==List && Length[#]==4 && And@@(IntegerQ/@#)&],a,(Message[FF::badtakepattern];Throw[$Failed])];
 TakeElemsToInternal[a_List,bl_:False]:=ValidateTakeElemsList[a,bl]-1;
 TakeElemsToInternal[full_List->subset_List,bl_:False]:=Module[{position,i,j,sublist,res},
   If[!AllTrue[full,#[[0]]==List&],Throw[$Failed]];
@@ -1024,21 +1171,24 @@ TakeElemsToInternal[full_List->subset_List,bl_:False]:=Module[{position,i,j,subl
     res=position/@subset;,
     res=Join[position[#[[1]]],position[#[[2]]]]&/@subset;
   ];
-  If[!FreeQ[res,Missing],Throw[$Failed]];
+  If[!FreeQ[res,Missing],(Message[FF::badtakepattern];Throw[$Failed])];
   res-1
 ];
+TakeElemsToInternal[___]:=(Message[FF::badtakepattern];Throw[$Failed]);
 RegisterAlgTake[gid_,inputs_,{elems_}]:=Catch[FFAlgTakeImplem[gid,inputs,Flatten[TakeElemsToInternal[elems]]]];
 FFAlgTake[gid_,id_,inputs_List,elems_]:=FFRegisterAlgorithm[RegisterAlgTake,gid,id,inputs,{elems}];
 
 
 MultiTakeElemsToInternal[a_List]:=Flatten[TakeElemsToInternal[#]]&/@a;
 MultiTakeElemsToInternal[full_List->subsets_List]:=Flatten[TakeElemsToInternal[full->#]]&/@subsets;
+MultiTakeElemsToInternal[___]:=(Message[FF::badtakepattern];Throw[$Failed]);
 RegisterAlgTakeAndAdd[gid_,inputs_,{elems_}]:=Catch[FFAlgTakeAndAddImplem[gid,inputs,MultiTakeElemsToInternal[elems]]];
 FFAlgTakeAndAdd[gid_,id_,inputs_List,elems_]:=FFRegisterAlgorithm[RegisterAlgTakeAndAdd,gid,id,inputs,{elems}];
 
 
 MultiTakeElemsToInternalBL[a_List]:=Flatten[TakeElemsToInternal[#,True]]&/@a;
 MultiTakeElemsToInternalBL[full_List->subsets_List]:=Flatten[TakeElemsToInternal[full->#,True]]&/@subsets;
+MultiTakeElemsToInternalBL[___]:=(Message[FF::badtakepattern];Throw[$Failed]);
 RegisterAlgTakeAndAddBL[gid_,inputs_,{elems_}]:=Catch[FFAlgTakeAndAddBLImplem[gid,inputs,MultiTakeElemsToInternalBL[elems]]];
 FFAlgTakeAndAddBL[gid_,id_,inputs_List,elems_]:=FFRegisterAlgorithm[RegisterAlgTakeAndAddBL,gid,id,inputs,{elems}];
 
@@ -1074,6 +1224,12 @@ FFNonZeroesGetInfo[gid_,id_]:={"All"->#[[1]],"NonZero"->(#[[2]]+1)}&[FFAlgorithm
 FFNonZeroesLearn[gid_]:=If[Length[#]==0,#,{"All"->#[[1]],"NonZero"->(#[[2]]+1)}]&[FFLearnImplem[GetGraphId[gid]]];
 
 
+RegisterAlgEvalCount[gid_,inputs_,{}]:=FFAlgEvalCountImplem[gid,inputs];
+FFAlgEvalCount[gid_,id_,{input_}]:=FFRegisterAlgorithm[RegisterAlgEvalCount,gid,id,{input},{}];
+FFEvalCountGet[gid_,id_]:=FFAlgEvalCountGetSetImplem[GetGraphId[gid],GetAlgId[gid,id],-1];
+FFEvalCountReset[gid_,id_,count_:0]:=Catch[FFAlgEvalCountGetSetImplem[GetGraphId[gid],GetAlgId[gid,id],CheckedUInt64[count]]];
+
+
 FFIndependentOf[id_, vars_List, var_]:=FFIndependentOfImplem[GetGraphId[id],Position[vars,var][[1,1]]-1];
 
 
@@ -1082,15 +1238,19 @@ FFReconstructFunction[id_,vars_,OptionsPattern[]] := Module[
   {np,maxnp,opt,res,nthreads,tmp,thisopt},
   opt = (#[[1]]->OptionValue[#[[1]]])&/@Options[FFReconstructFunction];
   maxnp = OptionValue["MaxPrimes"];
-  If[TrueQ[maxnp==Automatic], maxnp = 5];
+  If[TrueQ[maxnp==Automatic], maxnp = FFDefaultMaxRecPrimesImplem[]];
   nthreads = OptionValue["NThreads"];
   If[TrueQ[nthreads==Automatic], nthreads = If[TrueQ[Length[vars]==1],1,FFAutomaticNThreads[]]];
   If[Length[vars]==1,
     thisopt = Join[{"MaxPrimes"->maxnp},FilterRules[opt,Select[Options[FFReconstructUnivariate],FreeQ[#,"MaxPrimes"]&]]];
     Return[FFReconstructUnivariate[id,vars,Sequence@@thisopt]]
   ];
-  If[StringQ[OptionValue["Degrees"]],
+  Which[
+    StringQ[OptionValue["Degrees"]],
     res = FFLoadDegrees[id,OptionValue["Degrees"]];,
+    OptionValue["Degrees"][[0]]===List,
+    res = FFSetDegrees[id,OptionValue["Degrees"]];,
+    True,
     res = FFAllDegrees[id, nthreads, Sequence@@FilterRules[opt,Options[FFAllDegrees]]];
   ];
   If[TrueQ[res == $Failed], Return[$Failed]];
@@ -1118,15 +1278,18 @@ FFReconstructFunctionMod[id_,vars_,OptionsPattern[]] := Module[
   {np,maxnp,opt,res,nthreads,tmp,thisopt},
   opt = (#[[1]]->OptionValue[#[[1]]])&/@Options[FFReconstructFunctionMod];
   maxnp = 1;
-  If[TrueQ[maxnp==Automatic], maxnp = 5];
   nthreads = OptionValue["NThreads"];
   If[TrueQ[nthreads==Automatic], nthreads = If[TrueQ[Length[vars]==1],1,FFAutomaticNThreads[]]];
   If[Length[vars]==1,
     thisopt = Join[{"MaxPrimes"->maxnp},FilterRules[opt,Select[Options[FFReconstructUnivariate],FreeQ[#,"MaxPrimes"]&]]];
     Return[FFReconstructUnivariateMod[id,vars,Sequence@@thisopt]]
   ];
-  If[StringQ[OptionValue["Degrees"]],
+  Which[
+    StringQ[OptionValue["Degrees"]],
     res = FFLoadDegrees[id,OptionValue["Degrees"]];,
+    OptionValue["Degrees"][[0]]===List,
+    res = FFSetDegrees[id,OptionValue["Degrees"]];,
+    True,
     res = FFAllDegrees[id, nthreads, Sequence@@FilterRules[opt,Options[FFAllDegrees]]];
   ];
   If[TrueQ[res == $Failed], Return[$Failed]];
@@ -1143,13 +1306,13 @@ FFReconstructFunctionMod[id_,vars_,OptionsPattern[]] := Module[
 
 
 Options[FFParallelReconstructUnivariate]=Join[Options[FFReconstructFunction],{"MinDegree"->Automatic,"DegreeStep"->Automatic}];
-FFParallelReconstructUnivariate[id_,vars_,OptionsPattern[]]:=Module[
-  {opt,mindeg,maxdeg,degstep,deg,maxsp,maxnp,nthreads,sp,np,tmp,res,thisopt},
+FFParallelReconstructUnivariate[id_,{z_},OptionsPattern[]]:=Module[
+  {vars={z},opt,mindeg,maxdeg,degstep,deg,maxsp,maxnp,nthreads,sp,np,tmp,res,thisopt},
   opt = (#[[1]]->OptionValue[#[[1]]])&/@Options[FFParallelReconstructUnivariate];
   maxsp = OptionValue["MaxSingularPoints"];
   If[TrueQ[maxsp==Automatic], maxsp = 1];
   maxnp = OptionValue["MaxPrimes"];
-  If[TrueQ[maxnp==Automatic], maxnp = 5];
+  If[TrueQ[maxnp==Automatic], maxnp = FFDefaultMaxRecPrimesImplem[]];
   nthreads = OptionValue["NThreads"];
   If[TrueQ[nthreads==Automatic], nthreads = FFAutomaticNThreads[]];
   mindeg = OptionValue["MinDegree"];
@@ -1182,8 +1345,8 @@ FFParallelReconstructUnivariate[id_,vars_,OptionsPattern[]]:=Module[
 
 
 Options[FFParallelReconstructUnivariateMod]=Join[Options[FFReconstructFunction],{"MinDegree"->Automatic,"DegreeStep"->Automatic}];
-FFParallelReconstructUnivariateMod[id_,vars_,OptionsPattern[]]:=Module[
-  {opt,mindeg,maxdeg,degstep,deg,maxsp,maxnp,nthreads,sp,np,tmp,res,thisopt},
+FFParallelReconstructUnivariateMod[id_,{z_},OptionsPattern[]]:=Module[
+  {vars={z},opt,mindeg,maxdeg,degstep,deg,maxsp,maxnp,nthreads,sp,np,tmp,res,thisopt},
   opt = (#[[1]]->OptionValue[#[[1]]])&/@Options[FFParallelReconstructUnivariate];
   maxsp = OptionValue["MaxSingularPoints"];
   If[TrueQ[maxsp==Automatic], maxsp = 1];
@@ -1227,17 +1390,29 @@ SparseSolWSparseOut[sol_,depv_,indepv_]:=Module[{psol,rhs},
 
 FFDenseSolverSol[sol_,learninfo_]:=Module[{depv,indepv,zero},
   {depv,indepv,zero}={"DepVars","IndepVars","ZeroVars"}/.learninfo;
-  If[!TrueQ[Length[depv]==0],
+  Which[
+    TrueQ[Length[depv]==0],
+    (#->0)&/@zero,
+    Length[depv]*(Length[indepv]+1)==Length[sol],
     Join[Inner[Rule,depv,((#) . Join[indepv,{1}])&/@ArrayReshape[sol,{Length[depv],Length[indepv]+1}],List],(#->0)&/@zero],
-    (#->0)&/@zero
+    Length[depv]*Length[indepv]==Length[sol],
+    Join[Inner[Rule,depv,((#) . indepv)&/@ArrayReshape[sol,{Length[depv],Length[indepv]}],List],(#->0)&/@zero],
+    True,
+    Message[FF::badinputdim]; $Failed
   ]
 ];
 FFSparseSolverSol[sol_,learninfo_]:=Module[{depv,indepv,sparseout},
   {depv,indepv,sparseout}={"DepVars","IndepVars","SparseOutput"}/.learninfo;
   If[TrueQ[sparseout],Return[SparseSolWSparseOut[sol,depv,indepv]]];
-  If[!TrueQ[Length[depv]==0],
+  Which[
+    TrueQ[Length[depv]==0],
+    {},
+    Length[depv]*(Length[indepv]+1)==Length[sol],
     Inner[Rule,depv,((#) . Join[indepv,{1}])&/@ArrayReshape[sol,{Length[depv],Length[indepv]+1}],List],
-    {}
+    Length[depv]*Length[indepv]==Length[sol],
+    Inner[Rule,depv,((#) . indepv)&/@ArrayReshape[sol,{Length[depv],Length[indepv]}],List],
+    True,
+    Message[FF::badinputdim]; $Failed
   ]
 ];
 FFNonZeroesSol[sol_,learninfo_]:=Module[{tot,nonzero,ret},
@@ -1252,7 +1427,7 @@ FFMultiFitSol[sol_,learn_]:=MapThread[FFDenseSolverSol,{PartitionsWithLen[sol,(L
 AutoReconstructionOptions[]:=Options[FFReconstructFunction];
 
 
-Options[FFDenseSolve] := Join[{"Parameters"->Automatic, "IndepVarsOnly"->False},
+Options[FFDenseSolve] := Join[{"Parameters"->Automatic, "IndepVarsOnly"->False, "OnlyNonHomogeneous"->False},
                                    AutoReconstructionOptions[],
                                    Options[FFAlgDenseSolver]];
 FFDenseSolve[eqs_, vars_, OptionsPattern[]] := Module[
@@ -1271,6 +1446,10 @@ FFDenseSolve[eqs_, vars_, OptionsPattern[]] := Module[
                                 Sequence@@FilterRules[{opt}, Options[FFAlgDenseSolver]]];
       If[res==$Failed,Throw[$Failed]];
       
+      If[TrueQ[OptionValue["OnlyNonHomogeneous"]],
+        FFSolverOnlyNonHomogeneous[graph,sys];
+      ];
+
       FFGraphOutput[graph,sys];
       If[TrueQ[OptionValue["IndepVarsOnly"]], FFSetLearningOptions[graph,sys,"PrimeNo"->OptionValue["StartingPrimeNo"]];];
       learn = FFDenseSolverLearn[graph,vars];
@@ -1289,7 +1468,7 @@ FFDenseSolve[eqs_, vars_, OptionsPattern[]] := Module[
 ];
 
 
-Options[FFSparseSolve] := Join[{"Parameters"->Automatic, "IndepVarsOnly"->False, "MarkAndSweep"->True, "SparseOutput"->False},
+Options[FFSparseSolve] := Join[{"Parameters"->Automatic, "IndepVarsOnly"->False, "MarkAndSweep"->True, "SparseOutput"->False, "OnlyNonHomogeneous"->False},
                                    AutoReconstructionOptions[],
                                    Options[FFAlgSparseSolver]];
 FFSparseSolve[eqs_, vars_, OptionsPattern[]] := Module[
@@ -1307,10 +1486,14 @@ FFSparseSolve[eqs_, vars_, OptionsPattern[]] := Module[
       res = FFAlgSparseSolver[graph,sys,{in},params,eqs,vars,
                                 Sequence@@FilterRules[{opt}, Options[FFAlgSparseSolver]]];
       If[res==$Failed,Throw[$Failed]];
+      FFSparseSolverOptimizeZeroVars[graph,sys];
       If[(!TrueQ[OptionValue["IndepVarsOnly"]]) && TrueQ[OptionValue["SparseOutput"]],
         FFSolverSparseOutput[graph,sys];
       ];
-      
+      If[TrueQ[OptionValue["OnlyNonHomogeneous"]],
+        FFSolverOnlyNonHomogeneous[graph,sys];
+      ];
+
       FFGraphOutput[graph,sys];
       If[TrueQ[OptionValue["IndepVarsOnly"]], FFSetLearningOptions[graph,sys,"PrimeNo"->OptionValue["StartingPrimeNo"]];];
       learn = FFSparseSolverLearn[graph,vars];
@@ -1364,6 +1547,7 @@ FFInverse[mat_List, OptionsPattern[]]:=Module[
                FFAlgDenseSolver[graph,sys,{in},params,eqs,Join[varsx,varsy],
                                    Sequence@@FilterRules[{opt}, Options[FFAlgDenseSolver]]]];
       If[res==$Failed,Throw[$Failed]];
+      If[sparse, FFSparseSolverOptimizeZeroVars[graph,sys];];
       FFSolverOnlyHomogeneous[graph,sys];
 
       FFGraphOutput[graph,sys];
@@ -1396,6 +1580,9 @@ FFGraphEvaluateMany[g_,x_List,OptionsPattern[]]:=FFGraphEvaluateListImplem[GetGr
 
 
 FFPrimeNo[i_]:=FFPrimeNoImplem[CheckedInt32[i]];
+
+
+FFNAvailablePrimes[]:=FFNAvailablePrimesImplem[];
 
 
 NoEmptyList[a_]:=a;
@@ -1489,7 +1676,7 @@ FFAlgSubgraphFit[gid_,id_,inputs_List,subgraphid_,samplevars_,coeffs_,OptionsPat
 
 TakeMultiFitElemsToInternal[a___]:>Throw[$Failed];
 TakeMultiFitElemsToInternal[a_List->b_List]:=Module[{position},
-  If[!SubsetQ[a,Union@@b],Throw[$Failed];];
+  If[!SubsetQ[a,Union@@b],Message[FF::badtakepattern];Throw[$Failed];];
   position = Association[{}];
   Table[(position[a[[ii]]]=ii-1);,{ii,Length[a]}];
   (position/@#)&/@b
@@ -1500,7 +1687,7 @@ RegisterAlgSubgraphMultiFit[gid_,inputs_,{subgraphid_,samplevars_,take_,neededva
     neededvars = If[TrueQ[neededvarsin==Automatic], take[[2]], neededvarsin];
     CheckVariables[samplevars];
     CheckVariables[take[[1]]];
-    If[!TrueQ[And@@(Table[SubsetQ[take[[2,ii]],neededvars[[ii]]],{ii,Length[take[[2]]]}])],Throw[$Failed]];
+    If[!TrueQ[And@@(Table[SubsetQ[take[[2,ii]],neededvars[[ii]]],{ii,Length[take[[2]]]}])],Message[FF::badneededvars];Throw[$Failed]];
     FFSubgraphMultiFitImplem[gid,inputs,GetGraphId[subgraphid],Length[samplevars],
                                 TakeMultiFitElemsToInternal[take],
                                 Table[((Position[take[[2,ii]],#][[1,1]])&/@neededvars[[ii]])-1,{ii,Length[take[[2]]]}],
@@ -1578,8 +1765,116 @@ FFLinearFit[params_,delta_,integrandin_, tauvarsin_,varsin_,opt:OptionsPattern[]
 ];
 
 
+FFSparseSolverOptimizeZeroVars[graph_,node_]:=FFSparseSolverOptimizeZeroVarsImplem[GetGraphId[graph],GetAlgId[graph,node]];
+FFSparseSolverIsOptimizingZeroVars[graph_,node_]:=FFSparseSolverIsOptimizingZeroVarsImplem[GetGraphId[graph],GetAlgId[graph,node]];
+
+
 FFRatRec[a_List,p_]:=Catch[ToExpression/@FFRatRecImplem[ToString[CheckedInt[#]]&/@a,ToString[CheckedInt[p]]]];
 FFRatRec[a_,p_]:=Catch[ToExpression[FFRatRecImplem[{ToString[CheckedInt[a]]},ToString[CheckedInt[p]]][[1]]]];
+
+
+Options[FFParallelRatRec]:={"NThreads"->FFNThreads};
+FFParallelRatRec[a_List,p_,OptionsPattern[]]:=Catch[ToExpression/@FFParallelRatRecImplem[ToString[CheckedInt[#]]&/@a,ToString[CheckedInt[p]],toFFInternalUnsignedFlag["nthreads",OptionValue["NThreads"]]]];
+
+
+(* this is a direct port of the Python version *)
+Options[FFParallelReconstructDegreeData]:=AutoReconstructionOptions[];
+FFParallelReconstructDegreeData[graph_,opt:OptionsPattern[]]:=Module[
+  {check,pmin,rand,nparsin,nparsout,degdata,res,g,t,unirec,j,i,
+   linfuns,constfuns,numexp,denexp},
+  res = Catch[
+  
+  check[a_]:=a;
+  check[$Failed] := Throw[$Failed];
+  pmin = FFPrimeNo[FFNAvailablePrimes[]-1];
+  rand = (RandomInteger[{123456789123456789,pmin-1}])&;
+  nparsin = FFNParsOut[graph,FFGraphInputNode[graph]];
+  nparsout = FFNParsOut[graph];
+  
+  degdata = ConstantArray[0,{nparsout,2 + 4*nparsin}];
+  linfuns = (rand[]+rand[] t)&/@Range[nparsin];
+  constfuns = rand[]&/@Range[nparsin];
+  unirec = (
+    SortBy[CoefficientRules[#,{t}][[;;,1,1]],-#&]&/@#&/@NumeratorDenominator[check[
+      FFParallelReconstructUnivariateMod[g,{t},Sequence@@FilterRules[{opt}, Options[FFParallelReconstructUnivariateMod]]]
+    ]]
+  )&;
+  
+  FFNewGraph[g,"in",{t}];
+  FFAlgRatFunEval[g,"lin",{"in"},{t},linfuns];
+  FFAlgSimpleSubgraph[g,"sub",{"lin"},graph];
+  FFGraphOutput[g,"sub"];
+  res = unirec[];
+  Do[
+    numexp = res[[j,1]];
+    If[Length[numexp]===0,
+      Continue[];
+    ];
+    denexp = res[[j,2]];
+    degdata[[j,1]] = numexp[[1]];
+    degdata[[j,2]] = denexp[[1]];
+  ,{j,nparsout}];
+  
+  Do[
+    linfuns = constfuns;
+    linfuns[[i]] = t;
+    FFNewGraph[g,"in",{t}];
+    FFAlgRatFunEval[g,"lin",{"in"},{t},linfuns];
+    FFAlgSimpleSubgraph[g,"sub",{"lin"},graph];
+    FFGraphOutput[g,"sub"];
+    res = unirec[];
+    Do[
+      numexp = res[[j,1]];
+      If[Length[numexp]===0,
+        Continue[];
+      ];
+      denexp = res[[j,2]];
+      degdata[[j,3 + 4*(i-1)]] = numexp[[1]];
+      degdata[[j,3 + 4*(i-1) + 1]] = numexp[[-1]];
+      degdata[[j,3 + 4*(i-1) + 2]] = denexp[[1]];
+      degdata[[j,3 + 4*(i-1) + 3]] = denexp[[-1]];
+    ,{j,nparsout}];
+  ,{i,nparsin}];
+  
+  degdata
+  ];
+  
+  If[FFGraphQ[g], FFDeleteGraph[g]];
+  res
+]
+
+
+Options[FFTakeUnique]:={"NEvals"->3};
+FFTakeUnique[g_,node_,{in_},OptionsPattern[]]:=Module[
+{nparsin,nevals,evals,check,asso,ii,jj,nout,outs, outn, fromouts, minp},
+fromouts = Catch[
+check[a_]:=a;
+check[$Failed]:=Throw[$Failed];
+FFGraphOutput[g,in];
+nout = check[FFNParsOut[g,in]];
+nparsin = FFNodeNParsOutImplem[GetGraphId[g],0];
+nevals = OptionValue["NEvals"];
+minp = FFPrimeNo[FFNAvailablePrimes[]-1];
+evals = Transpose[check[FFGraphEvaluate[g,#]]&/@ArrayReshape[RandomInteger[{123456789123456789,minp},nparsin*nevals],{nevals,nparsin}]];
+asso = Association[{}];
+outn = 0;
+outs = {};
+fromouts = Table[
+  jj = asso[evals[[ii]]];
+  If[!IntegerQ[jj],
+    outn = outn+1;
+    asso[evals[[ii]]] = outn;
+    AppendTo[outs,ii];
+    outn,
+    (* Else *)
+    jj
+  ]
+,{ii,nout}];
+check[FFAlgTake[g,node,{in},{1,#}&/@outs]];
+fromouts
+];
+fromouts
+]
 
 
 Options[FFSetLearningOptions]={"PrimeNo"->Automatic,"MaxSingularPoints"->Automatic};
@@ -1601,18 +1896,31 @@ FFInstrNEGPOW = 5;
 FFInstrSMALLNUM = 6;
 FFInstrMEDNUM = 7;
 FFInstrBIGNUM = 8;
-FFInstrEND = 9;
+FFInstrVARPOW = 9;
+FFInstrEND = 10;
 
 
-RegisterAlgRatExprEval[gid_,inputs_,{params_,funcsin_}]:=Module[
+RegisterAlgRatExprEval[gid_,inputs_,{params_,funcsin_,fromstr_}]:=Module[
   {fun,FFCompile,numcounter,number,invnumber,error,
-   byteinstr,maxsmallint,maxmediumint,bytecodes,funcs},
+   byteinstr,maxsmallint,maxmediumint,bytecodes,funcs,
+   vpows,ffexppowdict},
+   
+  If[TrueQ[fromstr],
+    funcs = ToString[#,InputForm]&/@(funcsin /. Dispatch[Inner[Rule,params,Symbol["ffsym"<>ToString[#]]&/@Range[0,Length[params]-1],List]]);
+    Return[FFAlgRatExprEvalParseImplem[gid,inputs,Length[params],"ffsym",funcs]]
+  ];
   
   byteinstr = 2^8;
   maxsmallint = byteinstr-1;
   maxmediumint = 2^62;
   
-  funcs = funcsin /. Dispatch[Inner[Rule,params,FFExV/@Range[0,Length[params]-1],List]];
+  funcs = funcsin /. Dispatch[Inner[Rule,params,FFExV/@Range[0,Length[params]-1],List]] /. FFExV[a_]^b_:>FFExVPow[{a,b}];
+  vpows = Union[Cases[funcs,_FFExVPow,Infinity]][[;;,1]];
+  If[Length[vpows]>0,
+    ffexppowdict = Association[{}];
+    Do[ffexppowdict[vpows[[iii]]]=FFExVPow[iii-1];,{iii,Length[vpows]}];
+    funcs = funcs /. FFExVPow->ffexppowdict;
+  ];
   
   numcounter=0;
   number[i_]:=number[i]=(invnumber[numcounter]=i; numcounter++);
@@ -1621,6 +1929,7 @@ RegisterAlgRatExprEval[gid_,inputs_,{params_,funcsin_}]:=Module[
 
   FFCompile[expr_]:=error[expr];
   FFCompile[FFExV[j_]]:=(FFCompile[j]; Sow[FFInstrVAR];);
+  FFCompile[FFExVPow[j_]]:=(FFCompile[j]; Sow[FFInstrVARPOW];);
   FFCompile[a_Integer]:=Which[
     0<=a<=maxsmallint,
     Sow[FFInstrSMALLNUM]; Sow[a];,
@@ -1638,23 +1947,24 @@ RegisterAlgRatExprEval[gid_,inputs_,{params_,funcsin_}]:=Module[
   FFCompile[a_Times]:=(FFCompile/@(List@@a); FFCompile[Length[a]]; Sow[FFInstrMUL];);
   FFCompile[Power[a_,b_Integer]]:=Which[
     TrueQ[b>0],
-    (FFCompile[b]; FFCompile[a]; Sow[FFInstrPOW];);,
+    (FFCompile[a]; FFCompile[b]; Sow[FFInstrPOW];);,
     TrueQ[b<0],
-    (FFCompile[-b]; FFCompile[a]; Sow[FFInstrNEGPOW];);,
+    (FFCompile[a]; FFCompile[-b]; Sow[FFInstrNEGPOW];);,
     True,
     error[a^b];
   ];
     
   Catch[
     bytecodes = Table[ Reap[FFCompile[fun]; Sow[FFInstrEND];][[2,1]] ,{fun,funcs}];
-    FFAlgRatExprEvalImplem[gid,inputs,Length[params],bytecodes,ToString[#,InputForm]&/@(invnumber/@Range[0,numcounter-1])]
+    FFAlgRatExprEvalImplem[gid,inputs,Length[params],bytecodes,ToString[#,InputForm]&/@(invnumber/@Range[0,numcounter-1]),CheckedInt32List[Flatten[vpows]]]
   ]  
 ];
 
-FFAlgRatExprEval[gid_,id_,inputs_List,params_,functions_List]:=FFRegisterAlgorithm[RegisterAlgRatExprEval,gid,id,inputs,{params,functions}];
+Options[FFAlgRatExprEval]={"FromStringParser"->False};
+FFAlgRatExprEval[gid_,id_,inputs_List,params_,functions_List,OptionsPattern[]]:=FFRegisterAlgorithm[RegisterAlgRatExprEval,gid,id,inputs,{params,functions,OptionValue["FromStringParser"]}];
 
 
-Options[FFTogether] := Join[{"Parameters"->Automatic},AutoReconstructionOptions[]];
+Options[FFTogether] := Join[{"Parameters"->Automatic},AutoReconstructionOptions[],Options[FFAlgRatExprEval]];
 FFTogether[expr_,OptionsPattern[]]:=Module[
   {opt,vars,g,res,in,ex},
   opt = (#[[1]]->OptionValue[#[[1]]])&/@Options[FFTogether];
@@ -1666,7 +1976,7 @@ FFTogether[expr_,OptionsPattern[]]:=Module[
   res = Catch[
     CheckVariables[vars];
     FFNewGraph[g,in,vars];
-    If[!TrueQ[FFAlgRatExprEval[g,ex,{in},vars,{expr}]], Throw[$Failed]];
+    If[!TrueQ[FFAlgRatExprEval[g,ex,{in},vars,{expr},Sequence@@FilterRules[{opt}, Options[FFAlgRatExprEval]]]], Throw[$Failed]];
     FFGraphOutput[g,ex];
     If[TrueQ[#[[0]]==List],#[[1]],#]&@FFReconstructFunction[g,vars,Sequence@@FilterRules[{opt}, Options[FFReconstructFunction]]]
   ];
@@ -1690,6 +2000,7 @@ FFLoadLib[] := Module[
 FFLoadLibObjects[] := Module[
     {},
 
+    FFVersionImplem = LibraryFunctionLoad[fflowlib, "fflowml_version", LinkObject, LinkObject];
     (*FFMulInvImplem = LibraryFunctionLoad[fflowlib, "fflowml_mul_inv", LinkObject, LinkObject];*)
 
     FFDefaultNThreadsImplem = LibraryFunctionLoad[fflowlib, "fflowml_default_nthreads", LinkObject, LinkObject];
@@ -1716,10 +2027,12 @@ FFLoadLibObjects[] := Module[
     FFRegisterSparseSolverImplemN = LibraryFunctionLoad[fflowlib, "fflowml_alg_num_sparse_system", LinkObject, LinkObject];
     FFRegisterNodeDenseSolverImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_node_dense_system", LinkObject, LinkObject];
     FFRegisterNodeSparseSolverImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_node_sparse_system", LinkObject, LinkObject];
+    FFRegisterSparseSolverExImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_sparse_system_ex", LinkObject, LinkObject];
     FFLearnImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_learn", LinkObject, LinkObject];
     FFSparseSolverMarkAndSweepEqsImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_mark_and_sweep_eqs", LinkObject, LinkObject];
     FFSparseSolverDeleteUnneededEqsImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_delete_unneeded_eqs", LinkObject, LinkObject];
     FFAlgorithmGetInfoImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_get_info", LinkObject, LinkObject];
+    FFSolverIsImpossibleImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_system_is_impossible", LinkObject, LinkObject];
     FFTotalDegreesImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_degrees", LinkObject, LinkObject];
     FFVarsDegreesImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_vars_degrees", LinkObject, LinkObject];
     FFAllDegreesImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_all_degrees", LinkObject, LinkObject];
@@ -1733,10 +2046,13 @@ FFLoadLibObjects[] := Module[
     FFAlgMakeNodeMutableImplem = LibraryFunctionLoad[fflowlib, "fflowml_node_set_mutable", LinkObject, LinkObject];
     FFGraphNodesImplem = LibraryFunctionLoad[fflowlib, "fflowml_graph_nodes", LinkObject, LinkObject];
     FFGraphPruneImplem = LibraryFunctionLoad[fflowlib, "fflowml_graph_prune", LinkObject, LinkObject];
+    FFSolverNEqsNVarsImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_solver_neqs_nvars", LinkObject, LinkObject];
     FFSolverResetNeededVarsImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_system_reset_neeed", LinkObject, LinkObject];
     FFSolverOnlyHomogeneousImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_system_only_homogeneous", LinkObject, LinkObject];
+    FFSolverOnlyNonHomogeneousImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_system_only_non_homogeneous", LinkObject, LinkObject];
     FFSolverSparseOutputImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_system_sparse_output", LinkObject, LinkObject];
-    FFSolverSparseOutputWithMaxrowImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_system_sparse_output_with_maxrow", LinkObject, LinkObject];
+    FFSolverSparseOutputWithMaxrowImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_system_sparse_output_with_maxcol", LinkObject, LinkObject];
+    FFSolverEqWeightImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_system_eq_weight", LinkObject, LinkObject];
     FFIndependentOfImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_independent_of_var", LinkObject, LinkObject];
     FFAlgRatFunEvalImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_ratfun_eval", LinkObject, LinkObject];
     FFAlgRatFunEvalFromCoeffsImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_coeff_ratfun_eval", LinkObject, LinkObject];
@@ -1754,14 +2070,17 @@ FFLoadLibObjects[] := Module[
     FFAlgTakeAndAddBLImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_take_and_add_bl", LinkObject, LinkObject];
     FFSolverNIndepEqsImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_n_indep_eqs", LinkObject, LinkObject];
     FFSolverIndepEqsImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_indep_eqs", LinkObject, LinkObject];
+    FFSolverZeroVarsImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_solver_zero_vars", LinkObject, LinkObject];
     FFAlgJSONSparseSolverImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_json_sparse_system", LinkObject, LinkObject];
     FFAlgJSONRatFunEvalImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_json_ratfun", LinkObject, LinkObject];
     FFAlgLinearFitImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_linear_fit", LinkObject, LinkObject];
     FFAlgLinearFitImplemN = LibraryFunctionLoad[fflowlib, "fflowml_alg_numeric_fit", LinkObject, LinkObject];
     FFAlgLaurentImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_laurent", LinkObject, LinkObject];
     FFDefaultMaxDegImplem = LibraryFunctionLoad[fflowlib, "fflowml_default_maxdeg", LinkObject, LinkObject];
+    FFDefaultMaxRecPrimesImplem = LibraryFunctionLoad[fflowlib, "fflowml_default_max_rec_primes", LinkObject, LinkObject];
     FFDumpDegreesImplem=LibraryFunctionLoad[fflowlib, "fflowml_dump_degrees", LinkObject, LinkObject];
     FFLoadDegreesImplem=LibraryFunctionLoad[fflowlib, "fflowml_load_degrees", LinkObject, LinkObject];
+    FFSetDegreesImplem=LibraryFunctionLoad[fflowlib, "fflowml_set_degrees", LinkObject, LinkObject];
     FFDumpSamplePointsImplem=LibraryFunctionLoad[fflowlib, "fflowml_dump_sample_points", LinkObject, LinkObject];
     FFDumpEvaluationsImplem=LibraryFunctionLoad[fflowlib, "fflowml_dump_evaluations", LinkObject, LinkObject];
     FFLoadEvaluationsImplem=LibraryFunctionLoad[fflowlib, "fflowml_load_evaluations", LinkObject, LinkObject];
@@ -1770,14 +2089,22 @@ FFLoadLibObjects[] := Module[
     FFGraphEvaluateImplem=LibraryFunctionLoad[fflowlib, "fflowml_graph_evaluate", LinkObject, LinkObject];
     FFGraphEvaluateListImplem=LibraryFunctionLoad[fflowlib, "fflowml_graph_evaluate_list", LinkObject, LinkObject];
     FFPrimeNoImplem=LibraryFunctionLoad[fflowlib, "fflowml_prime_no", LinkObject, LinkObject];
+    FFNAvailablePrimesImplem=LibraryFunctionLoad[fflowlib, "fflowml_n_available_primes", LinkObject, LinkObject];
     FFNSamplePointsImplem=LibraryFunctionLoad[fflowlib, "fflowml_alg_count_sample_points", LinkObject, LinkObject];
     FFRatRecImplem=LibraryFunctionLoad[fflowlib, "fflowml_alg_rat_rec", LinkObject, LinkObject];
+    FFParallelRatRecImplem=LibraryFunctionLoad[fflowlib, "fflowml_parallel_rat_rec", LinkObject, LinkObject];
     FFAlgRatExprEvalImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_ratexpr_eval", LinkObject, LinkObject];
+    FFAlgRatExprEvalParseImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_ratexpr_parse", LinkObject, LinkObject];
     FFSetLearningOptionsImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_set_learning_options", LinkObject, LinkObject];
     FFCachedSubgraphImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_cached_subgraph", LinkObject, LinkObject];
     FFCachedFromSubgraphImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_cached_from_subgraph", LinkObject, LinkObject];
     FFCachedSubgraphMergeCachesImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_cached_subgraph_merge", LinkObject, LinkObject];
     FFCachedSubgraphSetDefaultSubcacheSizeImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_cached_subgraph_default_subcache_size", LinkObject, LinkObject];
+    FFAlgEvalCountImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_evalcount", LinkObject, LinkObject];
+    FFAlgEvalCountGetSetImplem = LibraryFunctionLoad[fflowlib, "fflowml_alg_evalcount_getset", LinkObject, LinkObject];
+    FFPeekNewNodeIdImplem = LibraryFunctionLoad[fflowlib, "fflowml_peek_new_node_id", LinkObject, LinkObject];
+    FFSparseSolverOptimizeZeroVarsImplem = LibraryFunctionLoad[fflowlib, "fflowml_sls_optimize_zero_vars", LinkObject, LinkObject];
+    FFSparseSolverIsOptimizingZeroVarsImplem = LibraryFunctionLoad[fflowlib, "fflowml_sls_is_optimizing_zero_vars", LinkObject, LinkObject];
 ];
 
 
@@ -1785,6 +2112,11 @@ FFLoadLib[];
 
 
 FFAlreadyLoaded = True;
+
+
+Unprotect[$FFVersion, $FFVersionMinor];
+{$FFVersion, $FFVersionMinor} = FFVersionImplem[];
+Protect[$FFVersion, $FFVersionMinor];
 
 
 End[] (* "`Private`" *)

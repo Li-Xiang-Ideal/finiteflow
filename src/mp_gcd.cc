@@ -68,18 +68,18 @@ namespace fflow {
     UInt ipmodq;
 
     // qp = q*p;
-    flint_mpz_mul_ui(qp.get(), p.get(), q);
+    detail::mpz_mul_u64(qp.get(), p.get(), q);
 
     // ipmodq = mul_inv(p % q, q)
-    ipmodq = flint_mpz_fdiv_ui(p.get(), q);
+    ipmodq = detail::mpz_fdiv_u64(p.get(), q);
     ipmodq = mul_inv(ipmodq, modq);
 
     // pinvp = p * ipmodq % qp
-    flint_mpz_mul_ui(pinvp.get(), p.get(), ipmodq);
+    detail::mpz_mul_u64(pinvp.get(), p.get(), ipmodq);
     mpz_mod(pinvp.get(), pinvp.get(), qp.get());
 
     // qinvq = (1-pinvp) % qp
-    flint_mpz_ui_sub(qinvq.get(), 1, pinvp.get());
+    detail::mpz_u64_sub(qinvq.get(), 1, pinvp.get());
     mpz_mod(qinvq.get(), qinvq.get(), qp.get());
 
     // store the results
@@ -94,7 +94,7 @@ namespace fflow {
                                      MPInt & res)
   {
     MPInt r;
-    flint_mpz_mul_ui(r.get(), c2.get(), b);
+    detail::mpz_mul_u64(r.get(), c2.get(), b);
     mpz_addmul(r.get(), c1.get(), a.get());
     mpz_mod(r.get(), r.get(), mod12.get());
     r.swap(res);
