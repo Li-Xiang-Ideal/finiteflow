@@ -688,6 +688,7 @@ FFAlgLaurent[gid_,id_,inputs_List,subgraphid_,order_List,OptionsPattern[]]:=FFRe
 
 PartitionsWithLen[l_, p_]:=PartitionsWithLenImpl[l,Accumulate[p]];
 PartitionsWithLenImpl[l_, p_]:=Inner[l[[#1;;#2]]&,Join[{0},Most[p]]+1,p,List];
+PartitionsWithLenImpl[{}, {}]:={};
 FFLaurentSol[solin_,expvar_,info_]:=Module[{sol,len},
   len = Inner[Max[#2-#1+1,0]&,info[[1]],info[[2]],List];
   sol = PartitionsWithLen[solin,len];
